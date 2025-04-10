@@ -412,7 +412,7 @@ function displayWaveformMarkers(timestamps, debug = null) {
   // 파형 영역에 타임라인 스케일 추가
   addTimelineScale(waveformEl, waveformData, containerWidth);
 
-  // 타임라인 상호작용 설정 (클릭 및 마커 호버 등)
+  // 타임라인 상호작용 설정 (파형 클릭으로 비디오 위치 이동 등)
   setupTimelineInteractions();
 }
 
@@ -720,104 +720,178 @@ function addTimelineScale(container, waveformData, containerWidth) {
   container.appendChild(scaleEl);
 }
 
-// 타임라인 상호작용 설정
+/**
+ * 타임라인 상호작용 설정 (파형 클릭으로 비디오 위치 이동 등)
+ */
 function setupTimelineInteractions() {
-  const timelineEl = document.querySelector(".waveform-timeline");
+  // 타임라인에서 재생 위치 업데이트
+  videoPlayer.addEventListener("timeupdate", updatePlayerPosition);
 
-  if (!timelineEl) return;
+  // 파형 영역 클릭 이벤트 설정
+  const waveformEl = document.getElementById("waveform");
 
-  // 타임라인 클릭 이벤트
-  timelineEl.addEventListener("click", (e) => {
-    // 마커 클릭은 여기서 처리하지 않음 (각 마커에 별도 이벤트 있음)
-    if (
-      e.target.classList.contains("bell-marker") ||
-      e.target.classList.contains("bell-candidate") ||
-      e.target.classList.contains("bell-rejected") ||
-      e.target.classList.contains("time-marker") ||
-      e.target.classList.contains("time-tick") ||
-      e.target.classList.contains("time-label")
-    ) {
-      return;
-    }
+  // 파형 캔버스 또는 전체 영역에 클릭 이벤트 추가
+  waveformEl.addEventListener("click", function (event) {
+    if (!waveformData) return;
 
-    const totalDuration = videoPlayer.duration || 0;
-    if (totalDuration <= 0) return;
+    // 클릭 위치의 상대적 좌표 계산 (0-1 사이 값)
+    const rect = waveformEl.getBoundingClientRect();
+    const clickX = event.clientX - rect.left;
+    const relativePosition = clickX / rect.width;
 
-    // 타임라인 상의 클릭 위치를 시간으로 변환
-    const rect = timelineEl.getBoundingClientRect();
-    const clickPos = (e.clientX - rect.left) / rect.width;
-    const newTime = clickPos * totalDuration;
+    // 상대 위치를 시간으로 변환
+    const totalDuration =
+      (waveformData.length / waveformData.sample_rate) *
+      waveformData.samples_per_pixel;
+    const clickTime = relativePosition * totalDuration;
 
-    // 비디오 위치 변경
-    jumpToTime(newTime);
-  });
-}
+    // 비디오 위치 이동
+    jumpToTime(clickTime);
 
-// 비디오 위치 업데이트 함수
-function updatePlayerPosition() {
-  const positionMarker = document.getElementById("playerPositionMarker");
-  if (!positionMarker) return;
-
-  const totalDuration = videoPlayer.duration || 0;
-  if (totalDuration <= 0) return;
-
-  const currentTime = videoPlayer.currentTime;
-  const position = (currentTime / totalDuration) * 100;
-
-  // 위치 마커 업데이트
-  positionMarker.style.left = `${position}%`;
-
-  // 현재 시간에 해당하는 벨 마커 강조
-  const bellMarkers = document.querySelectorAll(".bell-marker");
-  bellMarkers.forEach((marker) => {
-    const markerTime = parseFloat(marker.getAttribute("data-time"));
-    if (Math.abs(currentTime - markerTime) < 0.5) {
-      // 0.5초 이내면 강조
-      marker.classList.add("marker-active");
-    } else {
-      marker.classList.remove("marker-active");
-    }
+    // 클릭 효과 표시
+    showClickEffect(event.clientX, event.clientY);
   });
 
-  // 타임스탬프 리스트 항목 강조
-  const timestampItems = document.querySelectorAll(".timestamps-list li");
-  timestampItems.forEach((item) => {
-    const jumpBtn = item.querySelector(".timestamp-jump");
-    if (!jumpBtn) return;
-
-    const itemTime = parseFloat(jumpBtn.getAttribute("data-time"));
-    if (Math.abs(currentTime - itemTime) < 0.5) {
-      // 0.5초 이내면 강조
-      item.classList.add("active-timestamp");
-    } else {
-      item.classList.remove("active-timestamp");
-    }
-  });
-}
-
-// 비디오 특정 시간으로 이동 함수
-function jumpToTime(time) {
-  videoPlayer.currentTime = time;
-  videoPlayer.play();
-
-  // 플레이 시각화 효과 추가
-  const timeline = document.querySelector(".waveform-timeline");
-  if (timeline) {
+  // 추가: 클릭 이벤트에 시각적 효과 제공
+  function showClickEffect(x, y) {
     const ripple = document.createElement("div");
     ripple.className = "timeline-ripple";
+    ripple.style.left = `${x}px`;
+    ripple.style.top = `${y}px`;
+    document.body.appendChild(ripple);
 
-    const totalDuration = videoPlayer.duration || 0;
-    if (totalDuration > 0) {
-      const position = (time / totalDuration) * 100;
-      ripple.style.left = `${position}%`;
-      timeline.appendChild(ripple);
-
-      // 애니메이션 후 제거
-      setTimeout(() => {
-        ripple.remove();
-      }, 1000);
-    }
+    // 애니메이션 후 요소 제거
+    setTimeout(() => {
+      ripple.remove();
+    }, 500);
   }
+
+  // 움직이는 위치 마커 생성 또는 업데이트
+  updatePlayerPosition();
+}
+
+/**
+ * 비디오 재생 위치 마커 업데이트
+ */
+function updatePlayerPosition() {
+  if (!videoPlayer || !waveformData || videoPlayer.duration === 0) return;
+
+  const playerPosition = document.getElementById("playerPositionMarker");
+  if (!playerPosition) {
+    // 재생 위치 마커가 없으면 생성
+    const marker = document.createElement("div");
+    marker.id = "playerPositionMarker";
+    marker.className = "player-position-marker";
+    document.getElementById("waveform").appendChild(marker);
+  }
+
+  // 현재 비디오 시간의 상대적 위치 계산
+  const totalDuration =
+    (waveformData.length / waveformData.sample_rate) *
+    waveformData.samples_per_pixel;
+  const relativePosition = videoPlayer.currentTime / totalDuration;
+
+  // 마커 위치 업데이트
+  const positionMarker = document.getElementById("playerPositionMarker");
+  if (positionMarker) {
+    positionMarker.style.left = `${relativePosition * 100}%`;
+  }
+}
+
+/**
+ * 비디오 특정 시간으로 이동하는 함수
+ * @param {number} time 이동할 시간(초)
+ */
+function jumpToTime(time) {
+  if (!videoPlayer) return;
+
+  // 안전 범위 내로 시간 보정
+  time = Math.max(0, Math.min(time, videoPlayer.duration || 0));
+
+  // 비디오 위치 이동 및 재생
+  videoPlayer.currentTime = time;
+
+  // 이동 후 자동 재생
+  const playPromise = videoPlayer.play();
+
+  // 재생 완료 후 파형 위에 파동 효과 표시
+  if (playPromise !== undefined) {
+    playPromise
+      .then(() => {
+        // 파형 영역에 파동 효과 추가
+        const waveformEl = document.getElementById("waveform");
+        if (!waveformEl || !waveformData) return;
+
+        // 시간 위치에 맞는 파동 효과 계산
+        const totalDuration =
+          (waveformData.length / waveformData.sample_rate) *
+          waveformData.samples_per_pixel;
+        const relativePosition = time / totalDuration;
+
+        // 파형 영역에 맞게 x 좌표 계산
+        const waveformRect = waveformEl.getBoundingClientRect();
+        const rippleX =
+          waveformRect.left + waveformRect.width * relativePosition;
+        const rippleY = waveformRect.top + waveformRect.height / 2;
+
+        // 파동 효과 생성
+        showWaveRipple(rippleX, rippleY);
+      })
+      .catch((error) => {
+        // 자동 재생 정책으로 인한 오류 처리
+        console.warn("자동 재생 실패:", error);
+      });
+  }
+
+  // 파형 위치 마커 즉시 업데이트
+  updatePlayerPosition();
+
+  // 상단에 현재 시간 표시 업데이트 (선택 사항)
+  updateTimeDisplay(time);
+}
+
+/**
+ * 파형 영역에 파동 효과 표시
+ */
+function showWaveRipple(x, y) {
+  const ripple = document.createElement("div");
+  ripple.className = "timeline-ripple";
+  ripple.style.left = `${x}px`;
+  ripple.style.top = `${y}px`;
+  document.body.appendChild(ripple);
+
+  // 애니메이션 후 요소 제거
+  setTimeout(() => {
+    ripple.remove();
+  }, 600);
+}
+
+/**
+ * 현재 시간 표시 업데이트 (선택 사항)
+ */
+function updateTimeDisplay(time) {
+  // 시간 표시 요소가 있으면 업데이트
+  const timeDisplay = document.createElement("div");
+  timeDisplay.className = "time-popup";
+  timeDisplay.textContent = formatTime(time);
+  timeDisplay.style.position = "fixed";
+  timeDisplay.style.top = "20px";
+  timeDisplay.style.left = "50%";
+  timeDisplay.style.transform = "translateX(-50%)";
+  timeDisplay.style.backgroundColor = "rgba(0, 0, 0, 0.7)";
+  timeDisplay.style.color = "#fff";
+  timeDisplay.style.padding = "5px 10px";
+  timeDisplay.style.borderRadius = "4px";
+  timeDisplay.style.zIndex = "1000";
+  document.body.appendChild(timeDisplay);
+
+  // 잠시 후 제거
+  setTimeout(() => {
+    timeDisplay.style.opacity = "0";
+    setTimeout(() => {
+      timeDisplay.remove();
+    }, 300);
+  }, 1000);
 }
 
 // 분할된 세그먼트 표시 함수

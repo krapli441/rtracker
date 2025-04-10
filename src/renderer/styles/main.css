@@ -123,6 +123,12 @@ body {
   margin-bottom: 20px;
   min-height: 300px;
   overflow: hidden;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+
+.waveform:hover {
+  background-color: #f0f0f0;
 }
 
 .waveform-canvas,
@@ -131,6 +137,10 @@ body {
   width: 100%;
   height: auto;
   margin-bottom: 10px;
+}
+
+.waveform-canvas:hover {
+  opacity: 0.9;
 }
 
 .bell-marker,
@@ -187,7 +197,8 @@ body {
   right: 0;
   height: 30px;
   border-top: 1px solid var(--border-color);
-  background-color: rgba(255, 255, 255, 0.5);
+  background-color: rgba(255, 255, 255, 0.6);
+  backdrop-filter: blur(2px);
 }
 
 .timeline-marker {
@@ -208,17 +219,21 @@ body {
   white-space: nowrap;
 }
 
+.timeline-marker:hover .timeline-label {
+  color: #e74c3c;
+  font-weight: bold;
+}
+
 .player-position-marker {
   position: absolute;
+  top: 0;
   height: 100%;
   width: 2px;
-  background-color: #3498db;
-  top: 0;
-  left: 0;
-  z-index: 10;
-  box-shadow: 0 0 6px rgba(52, 152, 219, 0.5);
-  pointer-events: none;
+  background-color: #e74c3c;
+  z-index: 20;
+  box-shadow: 0 0 4px rgba(231, 76, 60, 0.6);
   transition: left 0.1s linear;
+  pointer-events: none;
 }
 
 .bell-candidate {
@@ -368,27 +383,27 @@ body {
 
 /* 타임라인 사용자 상호작용 효과 */
 .timeline-ripple {
-  position: absolute;
-  width: 10px;
-  height: 10px;
+  position: fixed;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  background-color: rgba(52, 152, 219, 0.6);
-  top: 50%;
+  background-color: rgba(231, 76, 60, 0.4);
   transform: translate(-50%, -50%);
   pointer-events: none;
-  z-index: 20;
-  animation: ripple-effect 1s ease-out;
+  z-index: 1000;
+  animation: ripple-effect 0.5s ease-out;
 }
 
 @keyframes ripple-effect {
   0% {
-    width: 10px;
-    height: 10px;
-    opacity: 1;
+    transform: translate(-50%, -50%) scale(0);
+    opacity: 0.8;
+  }
+  50% {
+    opacity: 0.4;
   }
   100% {
-    width: 50px;
-    height: 50px;
+    transform: translate(-50%, -50%) scale(5);
     opacity: 0;
   }
 }
@@ -612,4 +627,22 @@ input[type="range"]::-webkit-slider-thumb:hover {
   .segments-list {
     grid-template-columns: 1fr;
   }
+}
+
+/* 시간 팝업 애니메이션 */
+.time-popup {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background-color: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  padding: 5px 10px;
+  border-radius: 4px;
+  font-size: 14px;
+  z-index: 1000;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+  opacity: 1;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
 }
