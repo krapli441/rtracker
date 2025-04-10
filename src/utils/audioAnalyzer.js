@@ -30,25 +30,25 @@ class AudioAnalyzer {
     this.options = {
       // 기본 설정값
       // 벨 소리 감지를 위한 진폭 임계값
-      amplitudeThreshold: 0.65,
+      amplitudeThreshold: 0.45,
       // 벨 소리 주파수 범위 (Hz)
       minFrequency: 700,
       maxFrequency: 1500,
       // 최소 벨 소리 길이 (밀리초)
-      minBellDuration: 50,
+      minBellDuration: 40,
       // 최대 벨 소리 길이 (밀리초)
-      maxBellDuration: 2000,
+      maxBellDuration: 2500,
       // 벨 소리 간 최소 간격 (초)
       minBellInterval: 30,
       // 주파수 분석을 위한 FFT 윈도우 크기
       fftSize: 2048,
       // 복싱 벨 소리의 특징적인 주파수 범위 (Hz)
-      boxingBellMinFreq: 800,
-      boxingBellMaxFreq: 1200,
+      boxingBellMinFreq: 700,
+      boxingBellMaxFreq: 1500,
       // 주파수 에너지 임계값 (0-1 사이 값)
-      frequencyEnergyThreshold: 0.6,
+      frequencyEnergyThreshold: 0.5,
       // 패턴 매칭 유사도 임계값 (0-1 사이 값)
-      patternSimilarityThreshold: 0.7,
+      patternSimilarityThreshold: 0.65,
     };
 
     // 디버깅 정보 저장
@@ -61,8 +61,9 @@ class AudioAnalyzer {
 
     // 복싱 벨 소리의 전형적인 패턴 템플릿 (진폭 변화 패턴)
     this.bellPatternTemplate = [
-      1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.45, 0.4,
-      0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05,
+      1.0, 0.98, 0.95, 0.92, 0.88, 0.84, 0.8, 0.76, 0.72, 0.68, 0.64, 0.6, 0.56,
+      0.52, 0.48, 0.44, 0.4, 0.36, 0.32, 0.28, 0.25, 0.22, 0.19, 0.16, 0.13,
+      0.1, 0.08, 0.06, 0.04, 0.02,
     ];
   }
 
@@ -343,10 +344,17 @@ class AudioAnalyzer {
       0
     );
 
-    // 벨 주파수 범위의 에너지 합
+    // 벨 주파수 범위의 에너지 합 (가중치 적용)
     const bellRangeEnergy = frequencyData
       .filter((item) => item.frequency >= minFreq && item.frequency <= maxFreq)
-      .reduce((sum, item) => sum + item.magnitude, 0);
+      .reduce((sum, item) => {
+        // 복싱 벨 소리의 핵심 주파수 대역에 가중치 부여 (800-1200Hz)
+        let weight = 1.0;
+        if (item.frequency >= 800 && item.frequency <= 1200) {
+          weight = 1.5; // 복싱 벨 소리의 핵심 주파수에 가중치 부여
+        }
+        return sum + item.magnitude * weight;
+      }, 0);
 
     // 상대적 에너지 비율 계산 (정규화)
     const normalizedEnergy =
@@ -726,7 +734,7 @@ class AudioAnalyzer {
     console.log(
       `총 ${tempBellCandidates.length}개의 벨 후보를 그룹화합니다...`
     );
-    const groupedBells = this._groupBellCandidates(tempBellCandidates, 0.5); // 0.5초 이내 후보들은 그룹화
+    const groupedBells = this._groupBellCandidates(tempBellCandidates, 1.0); // 0.5초에서 1.0초로 증가 - 더 적극적으로 그룹화
 
     // 그룹화된 벨 후보들을 점수 기준으로 정렬
     groupedBells.sort((a, b) => b.bellScore - a.bellScore);
@@ -747,12 +755,24 @@ class AudioAnalyzer {
         isHighAmplitude && (isFrequencyMatch || isPatternMatch);
 
       if (
-        isBellSound &&
+        // 수정: 두 조건 중 하나만 만족해도 벨 소리로 인정
+        (isHighAmplitude || isFrequencyMatch || isPatternMatch) &&
         bell.duration >= options.minBellDuration / 1000 &&
         bell.duration <= options.maxBellDuration / 1000
       ) {
+        // 복합 점수가 특정 임계값 이상인지 확인 (0.35 이상이면 벨 소리로 간주)
+        const complexScore =
+          (isHighAmplitude ? 0.4 : 0) +
+          (isFrequencyMatch ? 0.4 : 0) +
+          (isPatternMatch ? 0.2 : 0);
+
+        const isQualifiedBell = complexScore >= 0.35;
+
         // 이전 벨과의 간격 확인
-        if (bell.start - lastBellTime >= options.minBellInterval) {
+        if (
+          isQualifiedBell &&
+          bell.start - lastBellTime >= options.minBellInterval
+        ) {
           // 벨 소리로 채택
           bellTimestamps.push(bell.start);
           lastBellTime = bell.start;
@@ -876,14 +896,21 @@ class AudioAnalyzer {
         currentGroup.end = Math.max(currentGroup.end, current.end);
         currentGroup.duration = currentGroup.end - currentGroup.start;
 
-        // 그룹 내에서 가장 높은 점수를 가진 후보의 속성으로 업데이트
+        // 그룹 내에서 최적의 속성 선택
+        // 벨 스코어가 높은 후보의 속성을 우선 사용
         const currentScore = current.bellScore || 0;
         const groupScore = currentGroup.bellScore || 0;
 
         if (currentScore > groupScore) {
           currentGroup.bellScore = currentScore;
-          currentGroup.frequencyEnergy = current.frequencyEnergy;
-          currentGroup.patternSimilarity = current.patternSimilarity;
+          currentGroup.frequencyEnergy = Math.max(
+            currentGroup.frequencyEnergy || 0,
+            current.frequencyEnergy || 0
+          );
+          currentGroup.patternSimilarity = Math.max(
+            currentGroup.patternSimilarity || 0,
+            current.patternSimilarity || 0
+          );
         }
 
         // 항상 최대 진폭 값과 샘플 수는 누적
