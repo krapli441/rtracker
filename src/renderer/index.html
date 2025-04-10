@@ -1,86 +1,134 @@
 <!DOCTYPE html>
 <html lang="ko">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>RTracker - 복싱장 영상 분석 도구</title>
-  <link rel="stylesheet" href="styles/main.css">
-</head>
-<body>
-  <div class="app-container">
-    <header class="app-header">
-      <h1>RTracker</h1>
-      <p>복싱 링 소리 기반 영상 분할 도구</p>
-    </header>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RTracker - 복싱장 영상 분석 도구</title>
+    <link rel="stylesheet" href="styles/main.css" />
+  </head>
+  <body>
+    <div class="app-container">
+      <header class="app-header">
+        <h1>RTracker</h1>
+        <p>복싱 링 소리 기반 영상 분할 도구</p>
+      </header>
 
-    <main class="app-main">
-      <div class="video-container" id="videoContainer">
-        <div class="upload-area" id="uploadArea">
-          <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-            <polyline points="17 8 12 3 7 8"></polyline>
-            <line x1="12" y1="3" x2="12" y2="15"></line>
-          </svg>
-          <p>비디오 파일을 여기에 끌어다 놓거나 클릭하여 업로드하세요</p>
-          <button id="uploadButton" class="btn btn-primary">파일 선택</button>
+      <main class="app-main">
+        <div class="video-container" id="videoContainer">
+          <div class="upload-area" id="uploadArea">
+            <svg
+              xmlns="http://www.w3.org/2000/svg"
+              width="48"
+              height="48"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+              <polyline points="17 8 12 3 7 8"></polyline>
+              <line x1="12" y1="3" x2="12" y2="15"></line>
+            </svg>
+            <p>비디오 파일을 여기에 끌어다 놓거나 클릭하여 업로드하세요</p>
+            <button id="uploadButton" class="btn btn-primary">파일 선택</button>
+          </div>
+          <video id="videoPlayer" controls></video>
         </div>
-        <video id="videoPlayer" controls></video>
-      </div>
 
-      <div class="waveform-container" id="waveformContainer">
-        <div class="waveform" id="waveform"></div>
-        <div class="waveform-controls">
-          <div class="detection-settings">
-            <h3>벨 소리 감지 설정</h3>
-            <div class="form-group">
-              <label for="amplitudeThreshold">진폭 임계값:</label>
-              <input type="range" id="amplitudeThreshold" min="0.05" max="1.0" step="0.05" value="0.75">
-              <span id="amplitudeThresholdValue">0.75</span>
-              <span class="setting-hint">높은 값 = 강한 소리만 감지, 낮은 값 = 더 많은 소리 감지</span>
+        <div class="waveform-container" id="waveformContainer">
+          <div class="waveform" id="waveform"></div>
+          <div id="waveformMarkers"></div>
+          <div class="waveform-controls">
+            <div class="detection-settings">
+              <h3>벨 소리 감지 설정</h3>
+              <div class="form-group">
+                <label for="amplitudeThreshold">진폭 임계값:</label>
+                <input
+                  type="range"
+                  id="amplitudeThreshold"
+                  min="0.05"
+                  max="1.0"
+                  step="0.05"
+                  value="0.45"
+                />
+                <span id="amplitudeThresholdValue">0.45</span>
+                <span class="setting-hint"
+                  >높은 값 = 강한 소리만 감지, 낮은 값 = 더 많은 소리 감지</span
+                >
+              </div>
+              <div class="form-group">
+                <label for="minBellInterval">최소 벨 간격 (초):</label>
+                <input
+                  type="number"
+                  id="minBellInterval"
+                  min="5"
+                  max="120"
+                  value="20"
+                />
+                <span class="setting-hint"
+                  >벨 소리 간 최소 시간 간격 (복싱 종소리는 보통 30초
+                  이상)</span
+                >
+              </div>
+              <div class="form-group">
+                <label for="useTemplate">템플릿 매칭 사용:</label>
+                <input type="checkbox" id="useTemplate" checked />
+                <span class="setting-hint"
+                  >미리 저장된 복싱 종소리 템플릿과 비교하여 더 정확한
+                  감지</span
+                >
+                <div class="template-info">
+                  <small
+                    >Boxing_bell_ring_one_time.mp3 파일을 템플릿으로
+                    사용합니다</small
+                  >
+                </div>
+              </div>
             </div>
-            <div class="form-group">
-              <label for="minBellInterval">최소 벨 간격 (초):</label>
-              <input type="number" id="minBellInterval" min="5" max="120" value="30">
-              <span class="setting-hint">벨 소리 간 최소 시간 간격 (초 단위)</span>
+            <div class="action-buttons">
+              <button id="analyzeButton" class="btn btn-success" disabled>
+                벨 소리 감지
+              </button>
+              <button id="processButton" class="btn btn-primary" disabled>
+                영상 분할
+              </button>
             </div>
           </div>
-          <div class="action-buttons">
-            <button id="analyzeButton" class="btn btn-success" disabled>벨 소리 감지</button>
-            <button id="processButton" class="btn btn-primary" disabled>영상 분할</button>
-          </div>
+        </div>
+
+        <div class="segments-container" id="segmentsContainer">
+          <h2>분할된 영상 목록</h2>
+          <div class="segments-list" id="segmentsList"></div>
+        </div>
+      </main>
+
+      <div class="loading-overlay" id="loadingOverlay">
+        <div class="spinner"></div>
+        <p id="loadingText">처리 중...</p>
+      </div>
+    </div>
+
+    <template id="segmentTemplate">
+      <div class="segment-item">
+        <div class="segment-preview">
+          <video controls></video>
+        </div>
+        <div class="segment-info">
+          <h3>세그먼트 <span class="segment-id"></span></h3>
+          <p>유형: <span class="segment-type"></span></p>
+          <p>시작: <span class="segment-start"></span></p>
+          <p>종료: <span class="segment-end"></span></p>
+          <p>길이: <span class="segment-duration"></span></p>
+        </div>
+        <div class="segment-actions">
+          <button class="btn btn-save">저장</button>
+          <button class="btn btn-delete">삭제</button>
         </div>
       </div>
+    </template>
 
-      <div class="segments-container" id="segmentsContainer">
-        <h2>분할된 영상 목록</h2>
-        <div class="segments-list" id="segmentsList"></div>
-      </div>
-    </main>
-
-    <div class="loading-overlay" id="loadingOverlay">
-      <div class="spinner"></div>
-      <p id="loadingText">처리 중...</p>
-    </div>
-  </div>
-
-  <template id="segmentTemplate">
-    <div class="segment-item">
-      <div class="segment-preview">
-        <video controls></video>
-      </div>
-      <div class="segment-info">
-        <h3>세그먼트 <span class="segment-id"></span></h3>
-        <p>시작: <span class="segment-start"></span></p>
-        <p>종료: <span class="segment-end"></span></p>
-        <p>길이: <span class="segment-duration"></span></p>
-      </div>
-      <div class="segment-actions">
-        <button class="btn btn-save">저장</button>
-        <button class="btn btn-delete">삭제</button>
-      </div>
-    </div>
-  </template>
-
-  <script src="renderer.js"></script>
-</body>
-</html> 
+    <script src="renderer.js"></script>
+  </body>
+</html>

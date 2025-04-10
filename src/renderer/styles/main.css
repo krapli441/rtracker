@@ -15,7 +15,9 @@
 }
 
 body {
-  font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  font-family: "Apple SD Gothic Neo", "Malgun Gothic", -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell,
+    "Open Sans", "Helvetica Neue", sans-serif;
   background-color: #f5f7fa;
   color: #333;
   line-height: 1.6;
@@ -132,16 +134,7 @@ body {
   overflow: visible;
 }
 
-.timeline-scale {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  z-index: 1;
-  pointer-events: none;
-}
-
+/* 타임라인 시간 마커 개선 */
 .time-marker {
   position: absolute;
   height: 100%;
@@ -151,77 +144,165 @@ body {
   flex-direction: column;
   align-items: center;
   pointer-events: none;
+  z-index: 2;
 }
 
-.time-tick {
+.time-marker-line {
   width: 1px;
-  height: 10px;
+  height: 60%;
   background-color: #ccc;
 }
 
-.time-label {
+.time-marker-label {
   font-size: 10px;
   color: #666;
   margin-top: 2px;
 }
 
-.player-position-marker {
+/* 복싱 세그먼트 시각화 */
+.segment {
   position: absolute;
-  height: 100%;
-  width: 2px;
-  background-color: #3498db;
-  top: 0;
-  left: 0;
-  z-index: 10;
-  box-shadow: 0 0 6px rgba(52, 152, 219, 0.5);
-  pointer-events: none;
-  transition: left 0.1s linear;
+  height: 40%;
+  bottom: 5px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  overflow: hidden;
 }
 
-.bell-marker, .bell-candidate, .bell-rejected {
-  position: absolute;
-  width: 4px;
-  height: 70%;
-  top: 15%;
-  transform: translateX(-50%);
+.segment-round {
+  background-color: rgba(46, 204, 113, 0.3);
+  border: 1px solid rgba(46, 204, 113, 0.7);
+}
+
+.segment-rest {
+  background-color: rgba(52, 152, 219, 0.3);
+  border: 1px solid rgba(52, 152, 219, 0.7);
+}
+
+.segment-unknown {
+  background-color: rgba(149, 165, 166, 0.3);
+  border: 1px solid rgba(149, 165, 166, 0.7);
+}
+
+.segment-label {
+  font-size: 10px;
+  font-weight: bold;
+  white-space: nowrap;
+  color: #333;
+  padding: 2px 4px;
   border-radius: 2px;
-  z-index: 5;
+  background-color: rgba(255, 255, 255, 0.7);
+  pointer-events: none;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+/* 세그먼트 유형별 스타일 */
+.segment-item.segment-round .segment-info h3 {
+  color: #27ae60;
+}
+
+.segment-item.segment-rest .segment-info h3 {
+  color: #2980b9;
+}
+
+/* 정보 메시지 스타일 */
+.segment-info-message {
+  background-color: #f8f9fa;
+  padding: 15px;
+  border-radius: 4px;
+  border-left: 4px solid #3498db;
+  margin-bottom: 10px;
+  color: #555;
+  line-height: 1.5;
+}
+
+/* 템플릿 매칭 관련 스타일 */
+.template-info {
+  margin-top: 5px;
+  padding: 5px;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+  font-style: italic;
+  color: #666;
+}
+
+input[type="checkbox"] {
+  transform: scale(1.2);
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+/* 인트로/아웃트로 세그먼트 */
+.segment-intro,
+.segment-outro {
+  background-color: rgba(155, 89, 182, 0.3);
+  border: 1px solid rgba(155, 89, 182, 0.7);
+}
+
+li.segment-intro,
+li.segment-outro {
+  background-color: rgba(155, 89, 182, 0.1);
+  border-left: 3px solid #9b59b6;
+}
+
+/* 복싱 세그먼트 리스트 */
+.segments-list {
+  list-style: none;
+  padding: 0;
+  margin: 10px 0;
+}
+
+.segments-list li {
+  padding: 8px 12px;
+  margin-bottom: 5px;
+  border-radius: 4px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.segments-list li.segment-round {
+  background-color: rgba(46, 204, 113, 0.1);
+  border-left: 3px solid #2ecc71;
+}
+
+.segments-list li.segment-rest {
+  background-color: rgba(52, 152, 219, 0.1);
+  border-left: 3px solid #3498db;
+}
+
+.segments-list li.segment-unknown {
+  background-color: rgba(149, 165, 166, 0.1);
+  border-left: 3px solid #95a5a6;
+}
+
+.segments-summary {
+  background-color: #fff;
+  border-radius: 4px;
+  padding: 15px;
+  border: 1px solid #ddd;
+  margin-top: 20px;
+}
+
+.segments-summary h4 {
+  margin-top: 0;
+  margin-bottom: 10px;
+  color: #2c3e50;
+}
+
+.segments-summary details {
+  margin: 10px 0;
+}
+
+.segments-summary summary {
   cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.bell-marker {
-  background-color: #e74c3c;
-  height: 80%;
-  top: 10%;
-}
-
-.bell-candidate {
-  background-color: #95a5a6;
-  opacity: 0.5;
-}
-
-.bell-rejected {
-  background-color: #e67e22;
-  opacity: 0.5;
-}
-
-.bell-marker:hover, .bell-candidate:hover, .bell-rejected:hover {
-  height: 90%;
-  top: 5%;
-  box-shadow: 0 0 8px rgba(231, 76, 60, 0.7);
-  opacity: 1;
-  width: 6px;
-}
-
-.marker-active {
-  background-color: #c0392b !important;
-  height: 100% !important;
-  top: 0 !important;
-  width: 8px !important;
-  opacity: 1 !important;
-  box-shadow: 0 0 12px rgba(192, 57, 43, 0.8) !important;
-  z-index: 15 !important;
+  padding: 5px;
+  color: #3498db;
+  font-weight: bold;
 }
 
 .timestamps-list {
@@ -567,7 +648,9 @@ input[type="range"]::-webkit-slider-thumb:hover {
 }
 
 @keyframes spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 /* 미디어 쿼리 */
@@ -575,12 +658,12 @@ input[type="range"]::-webkit-slider-thumb:hover {
   .waveform-controls {
     flex-direction: column;
   }
-  
+
   .action-buttons {
     width: 100%;
   }
-  
+
   .segments-list {
     grid-template-columns: 1fr;
   }
-} 
+}
