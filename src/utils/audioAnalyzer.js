@@ -25,12 +25,12 @@ class AudioAnalyzer {
     this.options = {
       // 기본 설정값
       // 벨 소리 감지를 위한 진폭 임계값
-      amplitudeThreshold: 0.75,
+      amplitudeThreshold: 0.65,
       // 벨 소리 주파수 범위 (Hz)
       minFrequency: 700,
       maxFrequency: 1500,
       // 최소 벨 소리 길이 (밀리초)
-      minBellDuration: 200,
+      minBellDuration: 50,
       // 최대 벨 소리 길이 (밀리초)
       maxBellDuration: 2000,
       // 벨 소리 간 최소 간격 (초)
@@ -251,6 +251,15 @@ class AudioAnalyzer {
     
     console.log(`신호 분석: 최대진폭=${maxAmplitude.toFixed(3)}, 평균진폭=${avgAmplitude.toFixed(3)}, 임계값=${options.amplitudeThreshold.toFixed(3)}`);
     
+    // 자동 임계값 조정 (필요한 경우)
+    let effectiveThreshold = options.amplitudeThreshold;
+    
+    // 만약 최대 진폭이 임계값보다 낮다면 적응형 임계값 적용
+    if (maxAmplitude < effectiveThreshold) {
+      effectiveThreshold = Math.max(0.5, maxAmplitude * 0.8);
+      console.log(`최대 진폭이 임계값보다 낮습니다. 임계값을 ${effectiveThreshold.toFixed(3)}로 조정합니다.`);
+    }
+    
     // 강한 윈도우 슬라이딩 접근법을 사용하여 벨 소리 패턴 감지
     console.log('패턴 분석을 통한 벨 소리 감지 중...');
     
@@ -264,10 +273,13 @@ class AudioAnalyzer {
     let bellEnd = 0;
     let bellPeakAmplitude = 0;
     let consecutiveHighAmplitudeSamples = 0;
-    let minConsecutiveHighSamples = 5; // 최소 연속 높은 진폭 샘플 수 (노이즈 필터링)
+    let minConsecutiveHighSamples = 3; // 복싱 벨소리를 더 잘 감지하기 위해 더 낮게 설정
     
     // 마지막 감지된 벨 시간
     let lastBellTime = -options.minBellInterval;
+    
+    // 임시 벨 후보들 저장 (나중에 그룹화를 위해)
+    const tempBellCandidates = [];
     
     // 진행 상황 보고용 변수
     const progressStep = Math.max(1, Math.floor(totalSamples / 20)); // 5% 단위
@@ -284,7 +296,7 @@ class AudioAnalyzer {
       const time = i / sampleRate;
       
       // 임계값 이상의 진폭을 가진 샘플 감지
-      if (amplitude >= options.amplitudeThreshold) {
+      if (amplitude >= effectiveThreshold) {
         if (!inBell) {
           // 새로운 벨 시작
           inBell = true;
@@ -308,67 +320,88 @@ class AudioAnalyzer {
             const bellDuration = (bellEnd - bellStart) / sampleRate;
             const bellStartTime = bellStart / sampleRate;
             
-            // 벨 후보로 추가
-            this.debug.candidateBells.push({
+            // 임시 벨 후보 저장
+            tempBellCandidates.push({
               start: bellStartTime,
+              end: bellStartTime + bellDuration,
               duration: bellDuration,
               peakAmplitude: bellPeakAmplitude,
-              samples: consecutiveHighAmplitudeSamples // 디버깅용 정보 추가
+              samples: consecutiveHighAmplitudeSamples
             });
             
-            // 최소 벨 길이를 조정하여 매우 짧은 소리도 감지
-            const effectiveMinDuration = Math.min(0.05, options.minBellDuration / 1000); // 최소 50ms 또는 설정값
-            
-            // 벨 길이 조건 확인
-            if (bellDuration >= effectiveMinDuration && 
-                bellDuration <= options.maxBellDuration / 1000) {
-              
-              // 이전 벨과의 간격 확인
-              if (bellStartTime - lastBellTime >= options.minBellInterval) {
-                // 벨 소리로 채택
-                bellTimestamps.push(bellStartTime);
-                lastBellTime = bellStartTime;
-                
-                this.debug.acceptedBells.push({
-                  start: bellStartTime,
-                  duration: bellDuration,
-                  peakAmplitude: bellPeakAmplitude,
-                  samples: consecutiveHighAmplitudeSamples
-                });
-                
-                console.log(`벨 소리 감지: ${bellStartTime.toFixed(2)}초, 길이: ${bellDuration.toFixed(2)}초, 진폭: ${bellPeakAmplitude.toFixed(3)}, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
-              } else {
-                // 간격 조건으로 거부
-                this.debug.rejectedBells.push({
-                  start: bellStartTime,
-                  duration: bellDuration,
-                  peakAmplitude: bellPeakAmplitude,
-                  samples: consecutiveHighAmplitudeSamples,
-                  reason: '최소 간격 미달',
-                  interval: bellStartTime - lastBellTime
-                });
-              }
-            } else {
-              // 길이 조건으로 거부
-              this.debug.rejectedBells.push({
-                start: bellStartTime,
-                duration: bellDuration,
-                peakAmplitude: bellPeakAmplitude,
-                samples: consecutiveHighAmplitudeSamples,
-                reason: '길이 조건 미달',
-                minDuration: options.minBellDuration / 1000,
-                maxDuration: options.maxBellDuration / 1000
-              });
-            }
+            // 디버깅 로그
+            console.log(`벨 후보 발견: ${bellStartTime.toFixed(3)}초, 길이: ${bellDuration.toFixed(3)}초, 진폭: ${bellPeakAmplitude.toFixed(3)}, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
           } else {
-            // 연속된 높은 진폭 샘플이 충분하지 않아 무시
-            console.log(`짧은 후보 무시: ${bellStart/sampleRate.toFixed(2)}초, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
+            // 연속된 높은 진폭 샘플이 충분하지 않으면 로그만
+            if (consecutiveHighAmplitudeSamples > 0) {
+              const bellStartTime = bellStart / sampleRate;
+              console.log(`짧은 후보 무시: ${bellStartTime.toFixed(3)}초, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
+            }
           }
           
           // 상태 초기화
           inBell = false;
           consecutiveHighAmplitudeSamples = 0;
         }
+      }
+    }
+    
+    // 마지막 남은 벨 처리
+    if (inBell && consecutiveHighAmplitudeSamples >= minConsecutiveHighSamples) {
+      bellEnd = totalSamples - 1;
+      const bellDuration = (bellEnd - bellStart) / sampleRate;
+      const bellStartTime = bellStart / sampleRate;
+      
+      tempBellCandidates.push({
+        start: bellStartTime,
+        end: bellStartTime + bellDuration,
+        duration: bellDuration,
+        peakAmplitude: bellPeakAmplitude,
+        samples: consecutiveHighAmplitudeSamples
+      });
+      
+      console.log(`마지막 벨 후보 발견: ${bellStartTime.toFixed(3)}초, 길이: ${bellDuration.toFixed(3)}초, 진폭: ${bellPeakAmplitude.toFixed(3)}, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
+    }
+    
+    // 서로 가까운 벨 후보들을 그룹화하여 하나의 벨로 만들기
+    console.log(`총 ${tempBellCandidates.length}개의 벨 후보를 그룹화합니다...`);
+    const groupedBells = this._groupBellCandidates(tempBellCandidates, 0.5); // 0.5초 이내 후보들은 그룹화
+    
+    // 그룹화된 벨 후보들을 처리
+    for (const bell of groupedBells) {
+      this.debug.candidateBells.push(bell);
+      
+      // 벨 길이 조건 확인 (최소 길이는 매우 짧게 설정)
+      const effectiveMinDuration = 0.03; // 30ms
+      
+      if (bell.duration >= effectiveMinDuration && 
+          bell.duration <= options.maxBellDuration / 1000) {
+        
+        // 이전 벨과의 간격 확인
+        if (bell.start - lastBellTime >= options.minBellInterval) {
+          // 벨 소리로 채택
+          bellTimestamps.push(bell.start);
+          lastBellTime = bell.start;
+          
+          this.debug.acceptedBells.push(bell);
+          
+          console.log(`벨 소리 감지: ${bell.start.toFixed(2)}초, 길이: ${bell.duration.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 그룹화됨: ${bell.grouped ? 'Yes' : 'No'}`);
+        } else {
+          // 간격 조건으로 거부
+          this.debug.rejectedBells.push({
+            ...bell,
+            reason: '최소 간격 미달',
+            interval: bell.start - lastBellTime
+          });
+        }
+      } else {
+        // 길이 조건으로 거부
+        this.debug.rejectedBells.push({
+          ...bell,
+          reason: '길이 조건 미달',
+          minDuration: effectiveMinDuration,
+          maxDuration: options.maxBellDuration / 1000
+        });
       }
     }
     
@@ -380,13 +413,13 @@ class AudioAnalyzer {
     
     if (bellTimestamps.length === 0) {
       console.log('주의: 벨 소리가 감지되지 않았습니다.');
-      console.log('임계값을 낮추거나 (현재: ' + options.amplitudeThreshold + ') 길이 조건을 조정해보세요.');
+      console.log('임계값을 낮추거나 (현재: ' + effectiveThreshold.toFixed(2) + ') 길이 조건을 조정해보세요.');
       
       // 후보 벨들의 진폭 정보 출력
       if (this.debug.candidateBells.length > 0) {
         console.log('후보 벨 소리들의 진폭 정보:');
         this.debug.candidateBells.forEach(bell => {
-          console.log(`시작: ${bell.start.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 길이: ${bell.duration.toFixed(2)}초`);
+          console.log(`시작: ${bell.start.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 길이: ${bell.duration.toFixed(2)}초, 그룹화됨: ${bell.grouped ? 'Yes' : 'No'}`);
         });
       }
       
@@ -405,10 +438,59 @@ class AudioAnalyzer {
           this.debug.candidateBells.reduce((min, b) => Math.min(min, b.peakAmplitude), 1) * 0.9
         );
         console.log(`제안: 진폭 임계값을 ${suggestedThreshold.toFixed(2)}로 시도해보세요.`);
+      } else if (maxAmplitude > 0) {
+        // 후보가 없다면 최대 진폭의 60%를 제안
+        const suggestedThreshold = Math.max(0.05, maxAmplitude * 0.6);
+        console.log(`제안: 진폭 임계값을 ${suggestedThreshold.toFixed(2)}로 시도해보세요.`);
       }
     }
     
     return bellTimestamps;
+  }
+
+  /**
+   * 근접한 벨 후보들을 그룹화하는 함수
+   * @param {Array<Object>} candidates 벨 후보 목록
+   * @param {number} maxGap 최대 허용 간격 (초)
+   * @returns {Array<Object>} 그룹화된 벨 후보 목록
+   * @private
+   */
+  _groupBellCandidates(candidates, maxGap) {
+    if (candidates.length <= 1) return candidates;
+    
+    // 시작 시간으로 정렬
+    candidates.sort((a, b) => a.start - b.start);
+    
+    const result = [];
+    let currentGroup = { ...candidates[0], grouped: false };
+    
+    for (let i = 1; i < candidates.length; i++) {
+      const current = candidates[i];
+      
+      // 현재 그룹과 현재 후보 사이의 간격 계산
+      const gap = current.start - currentGroup.end;
+      
+      if (gap <= maxGap) {
+        // 그룹화
+        currentGroup.end = Math.max(currentGroup.end, current.end);
+        currentGroup.duration = currentGroup.end - currentGroup.start;
+        currentGroup.peakAmplitude = Math.max(currentGroup.peakAmplitude, current.peakAmplitude);
+        currentGroup.samples += current.samples;
+        currentGroup.grouped = true;
+        
+        console.log(`후보 그룹화: ${current.start.toFixed(3)}초 후보를 ${currentGroup.start.toFixed(3)}초 그룹에 병합`);
+      } else {
+        // 이전 그룹 저장하고 새 그룹 시작
+        result.push(currentGroup);
+        currentGroup = { ...current, grouped: false };
+      }
+    }
+    
+    // 마지막 그룹 추가
+    result.push(currentGroup);
+    
+    console.log(`${candidates.length}개의 후보를 ${result.length}개의 그룹으로 통합했습니다.`);
+    return result;
   }
 
   /**
