@@ -36,6 +36,13 @@ class AudioAnalyzer {
       // 벨 소리 간 최소 간격 (초)
       minBellInterval: 30
     };
+    
+    // 디버깅 정보 저장
+    this.debug = {
+      candidateBells: [], // 임계값을 넘은 모든 후보 벨 소리들
+      rejectedBells: [],  // 길이나 간격 조건으로 제외된 벨 소리들
+      acceptedBells: []   // 최종 채택된 벨 소리들
+    };
   }
 
   /**
@@ -77,6 +84,7 @@ class AudioAnalyzer {
         
         audioContext.decodeAudioData(arrayBuffer, (audioBuffer) => {
           console.log(`오디오 디코딩 완료. 소요 시간: ${(Date.now() - startTime) / 1000}초`);
+          console.log(`오디오 정보: 길이=${audioBuffer.duration.toFixed(2)}초, 채널=${audioBuffer.numberOfChannels}, 샘플레이트=${audioBuffer.sampleRate}Hz`);
           
           // 만약 오디오 길이가 너무 길면 다운샘플링 적용
           let processedBuffer = audioBuffer;
@@ -94,6 +102,7 @@ class AudioAnalyzer {
           const waveform = this._createWaveformDataFromAudioBuffer(processedBuffer);
           
           console.log(`파형 데이터 생성 완료. 소요 시간: ${(Date.now() - downsampleStartTime) / 1000}초`);
+          console.log(`파형 데이터 정보: 길이=${waveform.length}포인트, 샘플레이트=${waveform.sample_rate}Hz`);
           
           resolve(waveform);
         }, (err) => {
@@ -205,7 +214,7 @@ class AudioAnalyzer {
   }
 
   /**
-   * 파형 데이터에서 벨 소리 감지
+   * 파형 데이터에서 벨 소리 감지 (향상된 알고리즘)
    * @param {WaveformData} waveformData 파형 데이터
    * @param {Object} options 감지 옵션
    * @returns {Array<number>} 벨 소리 시작 타임스탬프 (초 단위)
@@ -214,67 +223,190 @@ class AudioAnalyzer {
     console.log('벨 소리 감지 시작...');
     const startTime = Date.now();
     
+    // 옵션 설정
     const options = { ...this.options, ...customOptions };
-    const bellTimestamps = [];
+    console.log('벨 소리 감지 옵션:', JSON.stringify(options, null, 2));
     
+    // 결과 초기화
+    const bellTimestamps = [];
+    this.debug.candidateBells = [];
+    this.debug.rejectedBells = [];
+    this.debug.acceptedBells = [];
+    
+    // 채널 데이터 및 기본 정보
     const channel = waveformData.channel(0);
     const sampleRate = waveformData.sample_rate;
     const totalSamples = channel.length;
     
-    // 계산량 줄이기 위해 샘플 스킵 간격 결정
-    // 크기에 따라 더 효율적인 처리
-    const sampleSkip = totalSamples > 1000000 ? 10 : 1;
+    // 진폭 데이터 수집 (전체 파형의 진폭 정보를 수집하여 분석)
+    console.log('진폭 데이터 수집 중...');
+    const amplitudes = [];
+    for (let i = 0; i < totalSamples; i++) {
+      amplitudes.push(Math.abs(channel.max_sample(i)));
+    }
     
-    // 진행 로깅 위한 변수
-    const logInterval = Math.floor(totalSamples / 10); // 10% 단위로 진행상황 보고
+    // 신호의 통계적 정보 계산
+    const maxAmplitude = Math.max(...amplitudes);
+    const avgAmplitude = amplitudes.reduce((sum, a) => sum + a, 0) / amplitudes.length;
     
+    console.log(`신호 분석: 최대진폭=${maxAmplitude.toFixed(3)}, 평균진폭=${avgAmplitude.toFixed(3)}, 임계값=${options.amplitudeThreshold.toFixed(3)}`);
+    
+    // 강한 윈도우 슬라이딩 접근법을 사용하여 벨 소리 패턴 감지
+    console.log('패턴 분석을 통한 벨 소리 감지 중...');
+    
+    // 윈도우 크기 계산 (벨 소리의 최소 및 최대 길이에 따라)
+    const minBellSamples = Math.floor((options.minBellDuration / 1000) * sampleRate);
+    const maxBellSamples = Math.ceil((options.maxBellDuration / 1000) * sampleRate);
+    
+    // 벨 감지 상태 변수
     let inBell = false;
-    let bellStartSample = 0;
-    let bellDurationSamples = 0;
-    let lastBellTimestamp = -options.minBellInterval;
+    let bellStart = 0;
+    let bellEnd = 0;
+    let bellPeakAmplitude = 0;
+    let consecutiveHighAmplitudeSamples = 0;
+    let minConsecutiveHighSamples = 5; // 최소 연속 높은 진폭 샘플 수 (노이즈 필터링)
     
-    // 파형 샘플을 순회하며 벨 소리 패턴 감지 (건너뛰며 분석)
-    for (let i = 0; i < totalSamples; i += sampleSkip) {
-      // 진행 상황 로깅
-      if (i % logInterval === 0) {
+    // 마지막 감지된 벨 시간
+    let lastBellTime = -options.minBellInterval;
+    
+    // 진행 상황 보고용 변수
+    const progressStep = Math.max(1, Math.floor(totalSamples / 20)); // 5% 단위
+    
+    // 모든 샘플을 분석
+    for (let i = 0; i < totalSamples; i++) {
+      // 진행 상황 보고
+      if (i % progressStep === 0) {
         const percentage = Math.floor((i / totalSamples) * 100);
         console.log(`벨 소리 감지 진행: ${percentage}%`);
       }
       
-      const amplitude = Math.abs(channel.max_sample(i));
+      const amplitude = amplitudes[i];
+      const time = i / sampleRate;
       
-      // 임계값을 넘는 진폭 감지
-      if (amplitude > options.amplitudeThreshold) {
+      // 임계값 이상의 진폭을 가진 샘플 감지
+      if (amplitude >= options.amplitudeThreshold) {
         if (!inBell) {
+          // 새로운 벨 시작
           inBell = true;
-          bellStartSample = i;
-        }
-        bellDurationSamples += sampleSkip;
-      } else if (inBell) {
-        // 벨 소리가 끝남
-        inBell = false;
-        
-        // 벨 소리 길이가 유효한지 확인
-        const bellDurationMs = (bellDurationSamples / sampleRate) * 1000;
-        
-        if (bellDurationMs >= options.minBellDuration && 
-            bellDurationMs <= options.maxBellDuration) {
-          
-          const bellTimestamp = bellStartSample / sampleRate;
-          
-          // 이전 벨 소리와의 간격 확인
-          if (bellTimestamp - lastBellTimestamp >= options.minBellInterval) {
-            bellTimestamps.push(bellTimestamp);
-            lastBellTimestamp = bellTimestamp;
+          bellStart = i;
+          bellPeakAmplitude = amplitude;
+          consecutiveHighAmplitudeSamples = 1;
+        } else {
+          // 진행 중인 벨의 피크 업데이트
+          consecutiveHighAmplitudeSamples++;
+          if (amplitude > bellPeakAmplitude) {
+            bellPeakAmplitude = amplitude;
           }
         }
-        
-        bellDurationSamples = 0;
+      } else {
+        // 임계값 미만의 진폭
+        if (inBell) {
+          // 충분한 높은 진폭 샘플이 있는지 확인
+          if (consecutiveHighAmplitudeSamples >= minConsecutiveHighSamples) {
+            // 벨 종료
+            bellEnd = i;
+            const bellDuration = (bellEnd - bellStart) / sampleRate;
+            const bellStartTime = bellStart / sampleRate;
+            
+            // 벨 후보로 추가
+            this.debug.candidateBells.push({
+              start: bellStartTime,
+              duration: bellDuration,
+              peakAmplitude: bellPeakAmplitude,
+              samples: consecutiveHighAmplitudeSamples // 디버깅용 정보 추가
+            });
+            
+            // 최소 벨 길이를 조정하여 매우 짧은 소리도 감지
+            const effectiveMinDuration = Math.min(0.05, options.minBellDuration / 1000); // 최소 50ms 또는 설정값
+            
+            // 벨 길이 조건 확인
+            if (bellDuration >= effectiveMinDuration && 
+                bellDuration <= options.maxBellDuration / 1000) {
+              
+              // 이전 벨과의 간격 확인
+              if (bellStartTime - lastBellTime >= options.minBellInterval) {
+                // 벨 소리로 채택
+                bellTimestamps.push(bellStartTime);
+                lastBellTime = bellStartTime;
+                
+                this.debug.acceptedBells.push({
+                  start: bellStartTime,
+                  duration: bellDuration,
+                  peakAmplitude: bellPeakAmplitude,
+                  samples: consecutiveHighAmplitudeSamples
+                });
+                
+                console.log(`벨 소리 감지: ${bellStartTime.toFixed(2)}초, 길이: ${bellDuration.toFixed(2)}초, 진폭: ${bellPeakAmplitude.toFixed(3)}, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
+              } else {
+                // 간격 조건으로 거부
+                this.debug.rejectedBells.push({
+                  start: bellStartTime,
+                  duration: bellDuration,
+                  peakAmplitude: bellPeakAmplitude,
+                  samples: consecutiveHighAmplitudeSamples,
+                  reason: '최소 간격 미달',
+                  interval: bellStartTime - lastBellTime
+                });
+              }
+            } else {
+              // 길이 조건으로 거부
+              this.debug.rejectedBells.push({
+                start: bellStartTime,
+                duration: bellDuration,
+                peakAmplitude: bellPeakAmplitude,
+                samples: consecutiveHighAmplitudeSamples,
+                reason: '길이 조건 미달',
+                minDuration: options.minBellDuration / 1000,
+                maxDuration: options.maxBellDuration / 1000
+              });
+            }
+          } else {
+            // 연속된 높은 진폭 샘플이 충분하지 않아 무시
+            console.log(`짧은 후보 무시: ${bellStart/sampleRate.toFixed(2)}초, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
+          }
+          
+          // 상태 초기화
+          inBell = false;
+          consecutiveHighAmplitudeSamples = 0;
+        }
       }
     }
     
+    // 분석 결과 요약
     console.log(`벨 소리 감지 완료. 소요 시간: ${(Date.now() - startTime) / 1000}초`);
-    console.log(`감지된 벨 소리 수: ${bellTimestamps.length}`);
+    console.log(`총 후보 벨 소리: ${this.debug.candidateBells.length}개`);
+    console.log(`거부된 벨 소리: ${this.debug.rejectedBells.length}개`);
+    console.log(`감지된 벨 소리: ${bellTimestamps.length}개`);
+    
+    if (bellTimestamps.length === 0) {
+      console.log('주의: 벨 소리가 감지되지 않았습니다.');
+      console.log('임계값을 낮추거나 (현재: ' + options.amplitudeThreshold + ') 길이 조건을 조정해보세요.');
+      
+      // 후보 벨들의 진폭 정보 출력
+      if (this.debug.candidateBells.length > 0) {
+        console.log('후보 벨 소리들의 진폭 정보:');
+        this.debug.candidateBells.forEach(bell => {
+          console.log(`시작: ${bell.start.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 길이: ${bell.duration.toFixed(2)}초`);
+        });
+      }
+      
+      // 거부된 벨들의 정보 출력
+      if (this.debug.rejectedBells.length > 0) {
+        console.log('거부된 벨 소리 정보:');
+        this.debug.rejectedBells.forEach(bell => {
+          console.log(`시작: ${bell.start.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 길이: ${bell.duration.toFixed(2)}초, 거부 이유: ${bell.reason}`);
+        });
+      }
+      
+      // 진폭 임계값 자동 조정 제안
+      if (this.debug.candidateBells.length > 0) {
+        const suggestedThreshold = Math.max(
+          0.05,
+          this.debug.candidateBells.reduce((min, b) => Math.min(min, b.peakAmplitude), 1) * 0.9
+        );
+        console.log(`제안: 진폭 임계값을 ${suggestedThreshold.toFixed(2)}로 시도해보세요.`);
+      }
+    }
     
     return bellTimestamps;
   }
@@ -292,20 +424,60 @@ class AudioAnalyzer {
     // 샘플링을 통한 효율적인 최대 진폭 계산
     const samplingRate = Math.max(1, Math.floor(channel.length / 1000)); // 최대 1000 포인트만 샘플링
     let maxAmplitude = 0;
+    let sumAmplitude = 0;
+    let sampleCount = 0;
     
     for (let i = 0; i < channel.length; i += samplingRate) {
-      maxAmplitude = Math.max(maxAmplitude, Math.abs(channel.max_sample(i)));
+      const amplitude = Math.abs(channel.max_sample(i));
+      maxAmplitude = Math.max(maxAmplitude, amplitude);
+      sumAmplitude += amplitude;
+      sampleCount++;
     }
     
-    // 최대 진폭의 70%를 임계값으로 설정
-    const amplitudeThreshold = maxAmplitude * 0.7;
+    const avgAmplitude = sumAmplitude / sampleCount;
     
+    // 진폭 히스토그램 생성 (더 정교한 임계값 설정 위해)
+    const histogram = new Array(10).fill(0);
+    for (let i = 0; i < channel.length; i += samplingRate) {
+      const amplitude = Math.abs(channel.max_sample(i));
+      const bin = Math.min(9, Math.floor(amplitude * 10));
+      histogram[bin]++;
+    }
+    
+    // 히스토그램 분석 (노이즈와 신호를 구분할 수 있는 지점 찾기)
+    let significantBin = 0;
+    for (let i = 9; i >= 0; i--) {
+      if (histogram[i] > sampleCount * 0.01) { // 1% 이상의 샘플
+        significantBin = i;
+        break;
+      }
+    }
+    
+    // 최적의 임계값 계산 (통계 기반)
+    // 최대 진폭의 40%와 히스토그램 기반 분석의 중간값
+    const histogramThreshold = (significantBin / 10) * 0.8;
+    const amplitudeThreshold = Math.max(
+      avgAmplitude * 2,           // 평균 진폭의 2배
+      maxAmplitude * 0.4,         // 최대 진폭의 40%
+      histogramThreshold          // 히스토그램 기반 임계값
+    );
+    
+    console.log(`진폭 분석: 최대=${maxAmplitude.toFixed(3)}, 평균=${avgAmplitude.toFixed(3)}`);
+    console.log(`임계값 계산: 평균기반=${(avgAmplitude * 2).toFixed(3)}, 최대기반=${(maxAmplitude * 0.4).toFixed(3)}, 히스토그램기반=${histogramThreshold.toFixed(3)}`);
     console.log(`설정 최적화 완료. 임계값: ${amplitudeThreshold.toFixed(3)}`);
     
     return {
       ...this.options,
       amplitudeThreshold
     };
+  }
+  
+  /**
+   * 디버깅 정보 가져오기
+   * @returns {Object} 디버깅 정보
+   */
+  getDebugInfo() {
+    return this.debug;
   }
 }
 
