@@ -358,239 +358,366 @@ async function extractAudio(videoPath) {
 
 // 파형에 벨 소리 마커 표시 함수
 function displayWaveformMarkers(timestamps, debug = null) {
-  // 간단한 시각화로 대체
-  const totalDuration = videoPlayer.duration || 0;
+  if (!waveformData) return;
 
-  let markersHTML = "";
+  // 파형 컨테이너 표시
+  waveformContainer.style.display = "block";
 
-  // 타임라인 컨테이너 추가
-  markersHTML += '<div class="waveform-timeline">';
+  // 파형 컨테이너 초기화
+  waveformEl.innerHTML = "";
 
-  // 타임라인 눈금 표시
-  if (totalDuration > 0) {
-    // 타임라인 눈금과 시간 표시
-    const numMarkers = Math.min(10, Math.ceil(totalDuration / 60));
-    const interval = totalDuration / numMarkers;
+  // 캔버스 크기 설정
+  const containerWidth = waveformEl.offsetWidth;
+  const containerHeight = 200;
 
-    markersHTML += '<div class="timeline-scale">';
-    for (let i = 0; i <= numMarkers; i++) {
-      const position = (i / numMarkers) * 100;
-      const time = i * interval;
-      markersHTML += `<div class="time-marker" style="left: ${position}%">
-        <div class="time-tick"></div>
-        <span class="time-label">${formatTime(time)}</span>
-      </div>`;
-    }
-    markersHTML += "</div>";
+  // 메인 파형 캔버스 생성
+  const waveformCanvas = document.createElement("canvas");
+  waveformCanvas.width = containerWidth;
+  waveformCanvas.height = containerHeight;
+  waveformCanvas.className = "waveform-canvas";
+  waveformEl.appendChild(waveformCanvas);
 
-    // 재생 위치 표시기
-    markersHTML +=
-      '<div id="playerPositionMarker" class="player-position-marker"></div>';
-  }
+  // 주파수 스펙트럼 캔버스 (추가 분석 시각화)
+  const spectrumCanvas = document.createElement("canvas");
+  spectrumCanvas.width = containerWidth;
+  spectrumCanvas.height = 100;
+  spectrumCanvas.className = "spectrum-canvas";
+  waveformEl.appendChild(spectrumCanvas);
 
-  // 후보 및 거부된 벨 소리도 표시 (낮은 투명도로)
-  if (debug) {
-    // 후보 벨 표시 (회색)
-    if (debug.candidateBells && debug.candidateBells.length > 0) {
-      debug.candidateBells.forEach((bell) => {
-        // 수락된 벨과 중복되지 않는 경우에만 표시
-        if (
-          !debug.acceptedBells.find((b) => Math.abs(b.start - bell.start) < 0.1)
-        ) {
-          const position = (bell.start / totalDuration) * 100;
-          markersHTML += `<div class="bell-candidate" style="left: ${position}%" 
-            data-time="${bell.start}" 
-            title="후보 벨: ${formatTime(
-              bell.start
-            )}, 진폭: ${bell.peakAmplitude.toFixed(2)}"></div>`;
-        }
-      });
-    }
+  // 파형 그리기
+  drawWaveform(waveformCanvas, waveformData);
 
-    // 거부된 벨 표시 (주황색)
-    if (debug.rejectedBells && debug.rejectedBells.length > 0) {
-      debug.rejectedBells.forEach((bell) => {
-        const position = (bell.start / totalDuration) * 100;
-        const reason = bell.reason.replace(/"/g, "&quot;");
-        markersHTML += `<div class="bell-rejected" style="left: ${position}%" 
-          data-time="${bell.start}" 
-          title="거부된 벨: ${formatTime(bell.start)}, 이유: ${reason}"></div>`;
-      });
-    }
-  }
-
-  // 감지된 벨 소리 표시 (빨간색)
-  if (totalDuration > 0 && timestamps.length > 0) {
-    timestamps.forEach((timestamp, index) => {
-      const position = (timestamp / totalDuration) * 100;
-      markersHTML += `<div class="bell-marker" style="left: ${position}%" 
-        data-time="${timestamp}" 
-        data-index="${index + 1}" 
-        title="벨 소리 #${index + 1}: ${formatTime(timestamp)}"></div>`;
-    });
-  }
-
-  markersHTML += "</div>";
-
-  // 벨 소리 감지 결과 정보
-  if (timestamps.length === 0) {
-    markersHTML += `<p class="no-bells">벨 소리가 감지되지 않았습니다. 임계값을 낮춰보세요.</p>`;
-
-    // 디버깅 정보가 있다면 표시
-    if (debug && debug.candidateBells && debug.candidateBells.length > 0) {
-      // 가장 적절한 임계값 계산
-      const suggestedThreshold = Math.max(
-        0.05,
-        debug.candidateBells.reduce(
-          (min, b) => Math.min(min, b.peakAmplitude),
-          1
-        ) * 0.9
-      ).toFixed(2);
-
-      markersHTML += `<div class="debug-info">
-        <h4>문제 해결 정보</h4>
-        <p>${
-          debug.candidateBells.length
-        }개의 벨 소리 후보가 있지만 조건에 맞지 않아 제외되었습니다.</p>
-        
-        <details>
-          <summary>후보 벨 소리 정보 (${
-            debug.candidateBells.length
-          }개)</summary>
-          <ul class="debug-list">
-            ${debug.candidateBells
-              .map(
-                (bell) =>
-                  `<li>시작: ${formatTime(
-                    bell.start
-                  )}, 진폭: ${bell.peakAmplitude.toFixed(
-                    3
-                  )}, 길이: ${bell.duration.toFixed(2)}초
-                <button class="btn-small btn-preview" data-time="${
-                  bell.start
-                }">미리보기</button>
-              </li>`
-              )
-              .join("")}
-          </ul>
-        </details>
-        
-        <details>
-          <summary>거부된 벨 소리 정보 (${
-            debug.rejectedBells.length
-          }개)</summary>
-          <ul class="debug-list">
-            ${debug.rejectedBells
-              .map(
-                (bell) =>
-                  `<li>시작: ${formatTime(
-                    bell.start
-                  )}, 진폭: ${bell.peakAmplitude.toFixed(
-                    3
-                  )}, 길이: ${bell.duration.toFixed(2)}초, 거부 이유: ${
-                    bell.reason
-                  }
-                <button class="btn-small btn-preview" data-time="${
-                  bell.start
-                }">미리보기</button>
-              </li>`
-              )
-              .join("")}
-          </ul>
-        </details>
-        
-        <p>제안: 임계값을 <strong>${suggestedThreshold}</strong>로 설정하세요. <button id="suggestButton" class="btn-small">임계값 자동 조정</button></p>
-      </div>`;
-    }
+  // 디버그 정보가 있을 경우 주파수 스펙트럼 그리기
+  if (debug && debug.frequencyData && debug.frequencyData.length > 0) {
+    drawFrequencySpectrum(spectrumCanvas, debug.frequencyData);
   } else {
-    markersHTML += `<p>총 <strong>${timestamps.length}개</strong>의 벨 소리가 감지되었습니다.</p>`;
-    markersHTML += '<ul class="timestamps-list">';
-
-    timestamps.forEach((timestamp, index) => {
-      markersHTML += `<li>
-        <span class="timestamp-index">#${index + 1}</span>
-        <span class="timestamp-time">${formatTime(timestamp)}</span>
-        <button class="btn-small timestamp-jump" data-time="${timestamp}">이동</button>
-      </li>`;
-    });
-
-    markersHTML += "</ul>";
+    spectrumCanvas.style.display = "none";
   }
 
-  waveformEl.innerHTML = markersHTML;
+  // 감지된 벨 소리에 마커 추가
+  if (timestamps && timestamps.length > 0) {
+    addWaveformMarkers(waveformEl, timestamps, waveformData, containerWidth);
 
-  // 타임라인 이벤트 리스너 설정
-  setupTimelineInteractions();
-
-  // 임계값 자동 조정 버튼 이벤트 연결
-  const suggestButton = document.getElementById("suggestButton");
-  if (suggestButton && debug && debug.candidateBells.length > 0) {
-    suggestButton.addEventListener("click", () => {
-      const suggestedThreshold = Math.max(
-        0.05,
-        debug.candidateBells.reduce(
-          (min, b) => Math.min(min, b.peakAmplitude),
-          1
-        ) * 0.9
-      ).toFixed(2);
-
-      amplitudeThresholdInput.value = suggestedThreshold;
-      amplitudeThresholdValue.textContent = suggestedThreshold;
-
-      // 성공 표시 애니메이션
-      suggestButton.textContent = "✓ 적용됨";
-      suggestButton.style.backgroundColor = "#2ecc71";
-      setTimeout(() => {
-        suggestButton.textContent = "임계값 자동 조정";
-        suggestButton.style.backgroundColor = "";
-      }, 1500);
-
-      alert(
-        `임계값이 ${suggestedThreshold}로 조정되었습니다. '벨 소리 감지' 버튼을 다시 클릭하세요.`
+    // 거부된 후보 벨 소리 표시 (디버깅 용도)
+    if (debug && debug.rejectedBells && debug.rejectedBells.length > 0) {
+      addRejectedBellMarkers(
+        waveformEl,
+        debug.rejectedBells,
+        waveformData,
+        containerWidth
       );
-    });
+    }
   }
 
-  // 타임스탬프 점프 버튼 이벤트 연결
-  const jumpButtons = document.querySelectorAll(".timestamp-jump");
-  jumpButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      const time = parseFloat(button.getAttribute("data-time"));
-      jumpToTime(time);
-    });
-  });
+  // 파형 영역에 타임라인 스케일 추가
+  addTimelineScale(waveformEl, waveformData, containerWidth);
 
-  // 미리보기 버튼 이벤트 연결
-  const previewButtons = document.querySelectorAll(".btn-preview");
-  previewButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      const time = parseFloat(button.getAttribute("data-time"));
-      jumpToTime(time);
-    });
-  });
+  // 타임라인 상호작용 설정 (클릭 및 마커 호버 등)
+  setupTimelineInteractions();
+}
 
-  // 마커 직접 클릭 이벤트
-  const allMarkers = document.querySelectorAll(
-    ".bell-marker, .bell-candidate, .bell-rejected"
-  );
-  allMarkers.forEach((marker) => {
+/**
+ * 오디오 파형 그리기
+ * @param {HTMLCanvasElement} canvas 파형을 그릴 캔버스
+ * @param {Object} waveformData 파형 데이터
+ */
+function drawWaveform(canvas, waveformData) {
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+  const channel = waveformData.channel(0);
+  const length = Math.min(channel.length, width * 2);
+
+  // 그리기를 위한 스케일 계산
+  const xScale = width / length;
+  const yScale = height / 2;
+
+  // 배경 그리기
+  ctx.fillStyle = "#f5f5f5";
+  ctx.fillRect(0, 0, width, height);
+
+  // 격자 그리기
+  ctx.strokeStyle = "#e0e0e0";
+  ctx.lineWidth = 1;
+
+  // 가로 격자
+  for (let i = 0; i < height; i += 20) {
+    ctx.beginPath();
+    ctx.moveTo(0, i);
+    ctx.lineTo(width, i);
+    ctx.stroke();
+  }
+
+  // 세로 격자 (1초 간격)
+  const secondWidth = waveformData.sample_rate / waveformData.samples_per_pixel;
+  for (let i = 0; i < width; i += secondWidth * xScale) {
+    ctx.beginPath();
+    ctx.moveTo(i, 0);
+    ctx.lineTo(i, height);
+    ctx.stroke();
+  }
+
+  // 중앙선 그리기
+  ctx.beginPath();
+  ctx.strokeStyle = "#999";
+  ctx.lineWidth = 1;
+  ctx.moveTo(0, height / 2);
+  ctx.lineTo(width, height / 2);
+  ctx.stroke();
+
+  // 파형 그리기
+  ctx.beginPath();
+  ctx.strokeStyle = "#3498db";
+  ctx.lineWidth = 1;
+
+  // 최대 진폭 값 먼저 그리기
+  for (let i = 0; i < length; i++) {
+    const x = i * xScale;
+    const y = height / 2 - channel.max_sample(i) * yScale;
+
+    if (i === 0) {
+      ctx.moveTo(x, y);
+    } else {
+      ctx.lineTo(x, y);
+    }
+  }
+
+  // 최소 진폭 값 역순으로 그리기 (닫힌 영역을 만들기 위해)
+  for (let i = length - 1; i >= 0; i--) {
+    const x = i * xScale;
+    const y = height / 2 - channel.min_sample(i) * yScale;
+    ctx.lineTo(x, y);
+  }
+
+  // 채우기
+  ctx.closePath();
+  ctx.fillStyle = "rgba(52, 152, 219, 0.2)";
+  ctx.fill();
+
+  // 테두리 그리기
+  ctx.stroke();
+
+  // 임계값 선 그리기
+  const threshold = parseFloat(amplitudeThresholdInput.value);
+  ctx.beginPath();
+  ctx.strokeStyle = "rgba(231, 76, 60, 0.7)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 3]);
+  ctx.moveTo(0, height / 2 - threshold * yScale);
+  ctx.lineTo(width, height / 2 - threshold * yScale);
+  ctx.stroke();
+  ctx.moveTo(0, height / 2 + threshold * yScale);
+  ctx.lineTo(width, height / 2 + threshold * yScale);
+  ctx.stroke();
+  ctx.setLineDash([]);
+}
+
+/**
+ * 주파수 스펙트럼 그리기 (디버깅용)
+ * @param {HTMLCanvasElement} canvas 그릴 캔버스
+ * @param {Array} frequencyData 주파수 데이터 (벨 소리 후보 부근의 FFT 데이터)
+ */
+function drawFrequencySpectrum(canvas, frequencyData) {
+  const ctx = canvas.getContext("2d");
+  const width = canvas.width;
+  const height = canvas.height;
+
+  // 가장 최근의 주파수 데이터만 사용 (대표 샘플)
+  const sampleData = frequencyData[frequencyData.length - 1];
+  if (!sampleData || !sampleData.spectrum) return;
+
+  const spectrum = sampleData.spectrum;
+  const sampleRate = sampleData.sampleRate || 44100;
+
+  // 배경 그리기
+  ctx.fillStyle = "#f9f9f9";
+  ctx.fillRect(0, 0, width, height);
+
+  // 타이틀 텍스트
+  ctx.fillStyle = "#333";
+  ctx.font = "12px Arial";
+  ctx.fillText("주파수 스펙트럼 분석 (벨 소리 후보)", 10, 15);
+
+  // 스펙트럼 데이터 그리기
+  const barWidth = width / spectrum.length;
+
+  // 최대값 찾기 (정규화용)
+  const maxMagnitude = Math.max(...spectrum.map((v) => v.magnitude));
+
+  // 막대 그래프로 표시
+  for (let i = 0; i < spectrum.length; i++) {
+    const barHeight = (spectrum[i].magnitude / maxMagnitude) * (height - 30);
+    const freq = spectrum[i].frequency;
+
+    // 복싱 벨 소리 주파수 범위 강조 (800-1200Hz)
+    if (freq >= 800 && freq <= 1200) {
+      ctx.fillStyle = "rgba(231, 76, 60, 0.7)";
+    } else {
+      ctx.fillStyle = "rgba(52, 152, 219, 0.5)";
+    }
+
+    ctx.fillRect(
+      i * barWidth,
+      height - barHeight - 20,
+      barWidth - 1,
+      barHeight
+    );
+
+    // 주요 주파수 레이블 표시 (200Hz 간격)
+    if (i % 10 === 0) {
+      ctx.fillStyle = "#666";
+      ctx.font = "10px Arial";
+      ctx.fillText(`${Math.round(freq)}Hz`, i * barWidth, height - 5);
+    }
+  }
+
+  // 복싱 벨 소리 주파수 범위 표시
+  ctx.strokeStyle = "rgba(231, 76, 60, 0.7)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([5, 3]);
+
+  // 800Hz와 1200Hz 지점 찾기
+  const idx800 = spectrum.findIndex((s) => s.frequency >= 800);
+  const idx1200 = spectrum.findIndex((s) => s.frequency >= 1200);
+
+  if (idx800 >= 0 && idx1200 >= 0) {
+    ctx.beginPath();
+    ctx.moveTo(idx800 * barWidth, 20);
+    ctx.lineTo(idx800 * barWidth, height - 20);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(idx1200 * barWidth, 20);
+    ctx.lineTo(idx1200 * barWidth, height - 20);
+    ctx.stroke();
+
+    // 범위 레이블
+    ctx.fillStyle = "rgba(231, 76, 60, 0.7)";
+    ctx.font = "10px Arial";
+    ctx.fillText(
+      "벨 소리 주파수 범위",
+      ((idx800 + idx1200) / 2) * barWidth - 50,
+      35
+    );
+  }
+
+  ctx.setLineDash([]);
+}
+
+/**
+ * 파형에 벨 소리 마커 추가
+ * @param {HTMLElement} container 마커를 추가할 컨테이너
+ * @param {Array} timestamps 벨 소리 타임스탬프 배열
+ * @param {Object} waveformData 파형 데이터
+ * @param {number} containerWidth 컨테이너 너비
+ */
+function addWaveformMarkers(
+  container,
+  timestamps,
+  waveformData,
+  containerWidth
+) {
+  const totalDuration =
+    (waveformData.length / waveformData.sample_rate) *
+    waveformData.samples_per_pixel;
+
+  timestamps.forEach((timestamp, index) => {
+    const marker = document.createElement("div");
+    marker.className = "bell-marker";
+    marker.style.left = `${(timestamp / totalDuration) * 100}%`;
+
+    // 툴팁 정보 추가
+    marker.setAttribute("data-timestamp", timestamp);
+    marker.setAttribute("data-index", index + 1);
+    marker.title = `벨 #${index + 1}: ${formatTime(timestamp)}`;
+
+    // 마커 클릭 시 해당 위치로 이동
     marker.addEventListener("click", () => {
-      const time = parseFloat(marker.getAttribute("data-time"));
-      jumpToTime(time);
-
-      // 마커 강조 효과
-      marker.classList.add("marker-active");
-      setTimeout(() => {
-        marker.classList.remove("marker-active");
-      }, 1000);
+      jumpToTime(timestamp);
     });
-  });
 
-  // 타임라인에서 재생 위치 업데이트
-  if (totalDuration > 0) {
-    updatePlayerPosition();
-    videoPlayer.addEventListener("timeupdate", updatePlayerPosition);
+    container.appendChild(marker);
+  });
+}
+
+/**
+ * 거부된 벨 소리 후보 마커 추가 (디버깅용)
+ * @param {HTMLElement} container 마커를 추가할 컨테이너
+ * @param {Array} rejectedBells 거부된 벨 소리 후보 배열
+ * @param {Object} waveformData 파형 데이터
+ * @param {number} containerWidth 컨테이너 너비
+ */
+function addRejectedBellMarkers(
+  container,
+  rejectedBells,
+  waveformData,
+  containerWidth
+) {
+  const totalDuration =
+    (waveformData.length / waveformData.sample_rate) *
+    waveformData.samples_per_pixel;
+
+  rejectedBells.forEach((bell, index) => {
+    const marker = document.createElement("div");
+    marker.className = "rejected-bell-marker";
+    marker.style.left = `${(bell.timestamp / totalDuration) * 100}%`;
+
+    // 툴팁 정보 추가 (거부 이유 포함)
+    marker.setAttribute("data-timestamp", bell.timestamp);
+    marker.setAttribute("data-amplitude", bell.peakAmplitude);
+    marker.setAttribute("data-reason", bell.rejectionReason || "알 수 없음");
+    marker.title = `거부된 후보 #${index + 1}: ${formatTime(
+      bell.timestamp
+    )}\n진폭: ${bell.peakAmplitude.toFixed(2)}\n거부 사유: ${
+      bell.rejectionReason || "알 수 없음"
+    }`;
+
+    // 마커 클릭 시 해당 위치로 이동
+    marker.addEventListener("click", () => {
+      jumpToTime(bell.timestamp);
+    });
+
+    container.appendChild(marker);
+  });
+}
+
+/**
+ * 타임라인 스케일 추가
+ * @param {HTMLElement} container 스케일을 추가할 컨테이너
+ * @param {Object} waveformData 파형 데이터
+ * @param {number} containerWidth 컨테이너 너비
+ */
+function addTimelineScale(container, waveformData, containerWidth) {
+  const totalDuration =
+    (waveformData.length / waveformData.sample_rate) *
+    waveformData.samples_per_pixel;
+  const scaleEl = document.createElement("div");
+  scaleEl.className = "timeline-scale";
+
+  // 15초 간격으로 타임스탬프 표시
+  const interval = 15; // 초 단위
+  const numMarkers = Math.ceil(totalDuration / interval);
+
+  for (let i = 0; i <= numMarkers; i++) {
+    const time = i * interval;
+    const percent = (time / totalDuration) * 100;
+
+    // 타임라인이 너무 길면 표시 간격 조절
+    if (percent <= 100) {
+      const marker = document.createElement("div");
+      marker.className = "timeline-marker";
+      marker.style.left = `${percent}%`;
+
+      const label = document.createElement("span");
+      label.className = "timeline-label";
+      label.textContent = formatTime(time);
+
+      marker.appendChild(label);
+      scaleEl.appendChild(marker);
+    }
   }
+
+  container.appendChild(scaleEl);
 }
 
 // 타임라인 상호작용 설정
