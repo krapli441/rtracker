@@ -95,8 +95,8 @@ class AudioAnalyzer {
           );
         }
 
-        // 최대 분석 시간 설정 (메모리 초과 방지)
-        const MAX_ANALYZE_TIME = 120; // 초 (2분)
+        // 최대 분석 시간 설정 - 업로드된 비디오 길이에 맞게 동적으로 설정
+        let MAX_ANALYZE_TIME = 1800; // 초 (기본값 30분)
 
         // Node.js 환경에서 파일 읽기
         const audioData = fs.readFileSync(audioPath);
@@ -125,18 +125,31 @@ class AudioAnalyzer {
               }, 샘플레이트=${audioBuffer.sampleRate}Hz`
             );
 
-            // 만약 오디오 길이가 너무 길면 다운샘플링 적용
+            // 처리할 오디오 버퍼 (원본 또는 다운샘플링)
             let processedBuffer = audioBuffer;
 
-            if (audioBuffer.duration > MAX_ANALYZE_TIME) {
+            // MAX_ANALYZE_TIME을 audioBuffer의 실제 길이로 업데이트
+            MAX_ANALYZE_TIME = Math.ceil(audioBuffer.duration);
+            console.log(
+              `분석 최대 시간이 ${MAX_ANALYZE_TIME}초로 설정되었습니다.`
+            );
+
+            // 기존 다운샘플링 로직을 변경: 파형 분석은 전체 길이 사용하되,
+            // 메모리 사용량을 줄이기 위해 샘플레이트 감소로 처리
+            if (audioBuffer.sampleRate > 22050) {
               console.log(
-                `오디오 길이(${audioBuffer.duration.toFixed(
-                  2
-                )}초)가 너무 깁니다. 다운샘플링 적용...`
+                `오디오 샘플레이트(${audioBuffer.sampleRate}Hz)가 높아 다운샘플링 적용...`
               );
-              processedBuffer = this._downsampleAudioBuffer(
+
+              // 샘플레이트 다운샘플링 (최대 22kHz로 제한)
+              // 이 방식은 모든 오디오 길이를 유지하면서 데이터 양만 줄임
+              processedBuffer = this._downsampleAudioBufferSampleRate(
                 audioBuffer,
-                MAX_ANALYZE_TIME
+                Math.min(22050, audioBuffer.sampleRate / 2)
+              );
+
+              console.log(
+                `다운샘플링 적용 후 샘플레이트: ${processedBuffer.sampleRate}Hz`
               );
             }
 
@@ -154,7 +167,12 @@ class AudioAnalyzer {
               }초`
             );
             console.log(
-              `파형 데이터 정보: 길이=${waveform.length}포인트, 샘플레이트=${waveform.sample_rate}Hz`
+              `파형 데이터 정보: 길이=${waveform.length}포인트, 샘플레이트=${
+                waveform.sample_rate
+              }Hz, 전체 시간=${(
+                (waveform.length * waveform.samples_per_pixel) /
+                waveform.sample_rate
+              ).toFixed(2)}초`
             );
 
             resolve(waveform);
@@ -185,21 +203,40 @@ class AudioAnalyzer {
     const length = channel.length;
     const sampleRate = audioBuffer.sampleRate;
 
-    // 데이터 포인트 수 줄이기 (성능 향상을 위해)
-    const maxPoints = 10000;
-    const skipFactor = Math.max(1, Math.floor(length / maxPoints));
+    // 데이터 포인트 수 계산 - 전체 파형을 표시하기 위해 조정
+    // 오디오 길이(초) * 최소 초당 포인트 수(점/초)
+    const audioDurationInSeconds = length / sampleRate;
+    const pointsPerSecond = 100; // 초당 100개 포인트 (해상도를 높이면 더 많은 데이터를 표시할 수 있음)
+    const targetPoints = Math.max(
+      20000,
+      Math.ceil(audioDurationInSeconds * pointsPerSecond)
+    );
+
+    // 적응형 다운샘플링 - 오디오 길이에 따라 적응적으로 스킵 팩터 계산
+    const skipFactor = Math.max(1, Math.ceil(length / targetPoints));
+
+    console.log(
+      `오디오 길이: ${audioDurationInSeconds.toFixed(
+        2
+      )}초, 총 샘플: ${length}, 스킵 팩터: ${skipFactor}, 포인트 수: ~${Math.ceil(
+        length / skipFactor
+      )}`
+    );
 
     // 샘플 데이터 저장 배열
     const minSamples = [];
     const maxSamples = [];
 
+    // 데이터 다운샘플링 - 더 효율적인 방식으로 개선
     for (let i = 0; i < length; i += skipFactor) {
       // 각 포인트에서 최소/최대값 계산
       let min = channel[i];
       let max = channel[i];
 
-      for (let j = 0; j < skipFactor && i + j < length; j++) {
-        const value = channel[i + j];
+      // 이 범위에서 최소/최대값 찾기
+      const endIdx = Math.min(i + skipFactor, length);
+      for (let j = i; j < endIdx; j++) {
+        const value = channel[j];
         min = Math.min(min, value);
         max = Math.max(max, value);
       }
@@ -228,18 +265,19 @@ class AudioAnalyzer {
   }
 
   /**
-   * 오디오 버퍼의 다운샘플링을 수행하여 분석 속도 향상
+   * 샘플레이트 다운샘플링을 위한 새로운 함수
+   * 오디오 길이는 유지하면서 샘플 수만 줄임
    * @param {AudioBuffer} audioBuffer 원본 오디오 버퍼
-   * @param {number} maxDuration 최대 분석 시간 (초)
+   * @param {number} targetSampleRate 목표 샘플레이트
    * @returns {AudioBuffer} 다운샘플링된 오디오 버퍼
    * @private
    */
-  _downsampleAudioBuffer(audioBuffer, maxDuration) {
-    // 다운샘플링 비율 계산
-    const downsampleRatio = maxDuration / audioBuffer.duration;
+  _downsampleAudioBufferSampleRate(audioBuffer, targetSampleRate) {
+    // 원본과 대상 샘플레이트의 비율 계산
+    const ratio = targetSampleRate / audioBuffer.sampleRate;
 
-    // 새 버퍼 생성 (시간 축소)
-    const newLength = Math.floor(audioBuffer.length * downsampleRatio);
+    // 새 버퍼의 샘플 수 계산 (길이는 유지)
+    const newLength = Math.floor(audioBuffer.length * ratio);
     const newChannels = [];
 
     // 각 채널 다운샘플링
@@ -247,10 +285,20 @@ class AudioAnalyzer {
       const originalData = audioBuffer.getChannelData(c);
       const newData = new Float32Array(newLength);
 
+      // 선형 보간으로 샘플 다운샘플링
       for (let i = 0; i < newLength; i++) {
-        // 원본 인덱스 계산 (간단한 선형 보간)
-        const originalIndex = Math.floor(i / downsampleRatio);
-        newData[i] = originalData[originalIndex];
+        const originalIndex = i / ratio;
+        const index1 = Math.floor(originalIndex);
+        const index2 = Math.ceil(originalIndex);
+        const alpha = originalIndex - index1;
+
+        // 선형 보간 (마지막 샘플 처리)
+        if (index2 >= originalData.length) {
+          newData[i] = originalData[index1];
+        } else {
+          newData[i] =
+            originalData[index1] * (1 - alpha) + originalData[index2] * alpha;
+        }
       }
 
       newChannels.push(newData);
@@ -261,7 +309,7 @@ class AudioAnalyzer {
     const newBuffer = ctx.createBuffer(
       audioBuffer.numberOfChannels,
       newLength,
-      audioBuffer.sampleRate
+      targetSampleRate
     );
 
     // 채널 데이터 복사
