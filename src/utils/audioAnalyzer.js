@@ -1,6 +1,8 @@
 const fs = require('fs');
 const path = require('path');
 const WaveformData = require('waveform-data');
+const FFT = require('fft-js').fft;
+const FFTUtil = require('fft-js').util;
 let AudioContext;
 
 // Node.js와 브라우저 환경에서의 오디오 컨텍스트 설정
@@ -34,15 +36,31 @@ class AudioAnalyzer {
       // 최대 벨 소리 길이 (밀리초)
       maxBellDuration: 2000,
       // 벨 소리 간 최소 간격 (초)
-      minBellInterval: 30
+      minBellInterval: 30,
+      // 주파수 분석을 위한 FFT 윈도우 크기
+      fftSize: 2048,
+      // 복싱 벨 소리의 특징적인 주파수 범위 (Hz)
+      boxingBellMinFreq: 800,
+      boxingBellMaxFreq: 1200,
+      // 주파수 에너지 임계값 (0-1 사이 값)
+      frequencyEnergyThreshold: 0.6,
+      // 패턴 매칭 유사도 임계값 (0-1 사이 값)
+      patternSimilarityThreshold: 0.7
     };
     
     // 디버깅 정보 저장
     this.debug = {
       candidateBells: [], // 임계값을 넘은 모든 후보 벨 소리들
       rejectedBells: [],  // 길이나 간격 조건으로 제외된 벨 소리들
-      acceptedBells: []   // 최종 채택된 벨 소리들
+      acceptedBells: [],  // 최종 채택된 벨 소리들
+      frequencyData: []   // 주파수 분석 데이터
     };
+    
+    // 복싱 벨 소리의 전형적인 패턴 템플릿 (진폭 변화 패턴)
+    this.bellPatternTemplate = [
+      1.0, 0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6, 0.55,
+      0.5, 0.45, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1, 0.05
+    ];
   }
 
   /**
@@ -214,6 +232,173 @@ class AudioAnalyzer {
   }
 
   /**
+   * 오디오 데이터에 FFT를 적용하여 주파수 분석 수행
+   * @param {Float32Array} audioData 오디오 샘플 데이터
+   * @param {number} sampleRate 샘플링 레이트
+   * @param {number} windowSize FFT 윈도우 크기
+   * @returns {Array<{frequency: number, magnitude: number}>} 주파수별 크기
+   * @private
+   */
+  _analyzeFrequency(audioData, sampleRate, windowSize = this.options.fftSize) {
+    // FFT 윈도우 크기 조정 (2의 제곱수로)
+    const fftSize = Math.pow(2, Math.ceil(Math.log2(windowSize)));
+    
+    // 분석할 데이터 준비 (윈도우 크기에 맞게)
+    const dataToAnalyze = new Array(fftSize).fill(0);
+    for (let i = 0; i < Math.min(audioData.length, fftSize); i++) {
+      dataToAnalyze[i] = audioData[i];
+    }
+    
+    // 해밍 윈도우 적용 (주파수 누출 감소)
+    for (let i = 0; i < fftSize; i++) {
+      dataToAnalyze[i] *= 0.54 - 0.46 * Math.cos(2 * Math.PI * i / (fftSize - 1));
+    }
+    
+    // FFT 실행
+    const fftResult = FFT(dataToAnalyze);
+    
+    // 주파수 비닝 및 정규화
+    const frequencies = [];
+    const magnitudes = FFTUtil.fftMag(fftResult);
+    
+    // 의미 있는 주파수만 분석 (나이퀴스트 주파수까지)
+    const nyquistFreq = sampleRate / 2;
+    const usableBins = Math.floor(fftSize / 2);
+    
+    // 최대 진폭 찾기 (정규화 용)
+    const maxMagnitude = Math.max(...magnitudes.slice(0, usableBins));
+    
+    // 주파수 비닝 및 정규화
+    for (let i = 0; i < usableBins; i++) {
+      const frequency = (i * sampleRate) / fftSize;
+      const normalizedMagnitude = magnitudes[i] / maxMagnitude;
+      
+      frequencies.push({
+        frequency,
+        magnitude: normalizedMagnitude
+      });
+    }
+    
+    return frequencies;
+  }
+  
+  /**
+   * 주파수 스펙트럼에서 벨 소리의 특징적인 주파수 범위의 에너지 계산
+   * @param {Array<{frequency: number, magnitude: number}>} frequencyData 주파수 데이터
+   * @param {number} minFreq 최소 주파수
+   * @param {number} maxFreq 최대 주파수
+   * @returns {number} 지정된 주파수 범위의 에너지 (0-1 사이 정규화)
+   * @private
+   */
+  _calculateBellFrequencyEnergy(frequencyData, minFreq = this.options.boxingBellMinFreq, maxFreq = this.options.boxingBellMaxFreq) {
+    // 전체 주파수 범위의 에너지 합
+    const totalEnergy = frequencyData.reduce((sum, item) => sum + item.magnitude, 0);
+    
+    // 벨 주파수 범위의 에너지 합
+    const bellRangeEnergy = frequencyData
+      .filter(item => item.frequency >= minFreq && item.frequency <= maxFreq)
+      .reduce((sum, item) => sum + item.magnitude, 0);
+    
+    // 상대적 에너지 비율 계산 (정규화)
+    const normalizedEnergy = totalEnergy > 0 ? bellRangeEnergy / totalEnergy : 0;
+    
+    return normalizedEnergy;
+  }
+  
+  /**
+   * 진폭 패턴과 벨 소리 패턴 템플릿 간의 유사도 계산
+   * @param {Array<number>} amplitudePattern 진폭 패턴
+   * @returns {number} 패턴 유사도 (0-1 사이, 1이 가장 유사)
+   * @private
+   */
+  _calculatePatternSimilarity(amplitudePattern) {
+    // 패턴 길이가 템플릿보다 짧으면 보간하여 확장
+    let normalizedPattern = amplitudePattern;
+    if (amplitudePattern.length < this.bellPatternTemplate.length) {
+      normalizedPattern = this._interpolatePattern(amplitudePattern, this.bellPatternTemplate.length);
+    } else if (amplitudePattern.length > this.bellPatternTemplate.length) {
+      // 패턴이 더 길면 다운샘플링
+      normalizedPattern = this._downsamplePattern(amplitudePattern, this.bellPatternTemplate.length);
+    }
+    
+    // 정규화 (최대값이 1이 되도록)
+    const maxAmplitude = Math.max(...normalizedPattern);
+    if (maxAmplitude > 0) {
+      normalizedPattern = normalizedPattern.map(a => a / maxAmplitude);
+    }
+    
+    // 패턴 유사도 계산 (코사인 유사도)
+    let dotProduct = 0;
+    let patternMagnitude = 0;
+    let templateMagnitude = 0;
+    
+    for (let i = 0; i < this.bellPatternTemplate.length; i++) {
+      dotProduct += normalizedPattern[i] * this.bellPatternTemplate[i];
+      patternMagnitude += normalizedPattern[i] * normalizedPattern[i];
+      templateMagnitude += this.bellPatternTemplate[i] * this.bellPatternTemplate[i];
+    }
+    
+    patternMagnitude = Math.sqrt(patternMagnitude);
+    templateMagnitude = Math.sqrt(templateMagnitude);
+    
+    const similarity = dotProduct / (patternMagnitude * templateMagnitude);
+    
+    return similarity;
+  }
+  
+  /**
+   * 패턴 보간 (길이 확장)
+   * @param {Array<number>} pattern 원본 패턴
+   * @param {number} newLength 새 길이
+   * @returns {Array<number>} 보간된 패턴
+   * @private
+   */
+  _interpolatePattern(pattern, newLength) {
+    const result = new Array(newLength);
+    const ratio = (pattern.length - 1) / (newLength - 1);
+    
+    for (let i = 0; i < newLength; i++) {
+      const position = i * ratio;
+      const index = Math.floor(position);
+      const fraction = position - index;
+      
+      if (index < pattern.length - 1) {
+        result[i] = pattern[index] * (1 - fraction) + pattern[index + 1] * fraction;
+      } else {
+        result[i] = pattern[pattern.length - 1];
+      }
+    }
+    
+    return result;
+  }
+  
+  /**
+   * 패턴 다운샘플링 (길이 축소)
+   * @param {Array<number>} pattern 원본 패턴
+   * @param {number} newLength 새 길이
+   * @returns {Array<number>} 다운샘플링된 패턴
+   * @private
+   */
+  _downsamplePattern(pattern, newLength) {
+    const result = new Array(newLength);
+    const ratio = pattern.length / newLength;
+    
+    for (let i = 0; i < newLength; i++) {
+      const startIdx = Math.floor(i * ratio);
+      const endIdx = Math.floor((i + 1) * ratio);
+      
+      let sum = 0;
+      for (let j = startIdx; j < endIdx; j++) {
+        sum += pattern[j];
+      }
+      
+      result[i] = sum / (endIdx - startIdx);
+    }
+    
+    return result;
+  }
+
+  /**
    * 파형 데이터에서 벨 소리 감지 (향상된 알고리즘)
    * @param {WaveformData} waveformData 파형 데이터
    * @param {Object} options 감지 옵션
@@ -232,6 +417,7 @@ class AudioAnalyzer {
     this.debug.candidateBells = [];
     this.debug.rejectedBells = [];
     this.debug.acceptedBells = [];
+    this.debug.frequencyData = [];
     
     // 채널 데이터 및 기본 정보
     const channel = waveformData.channel(0);
@@ -266,6 +452,7 @@ class AudioAnalyzer {
     // 윈도우 크기 계산 (벨 소리의 최소 및 최대 길이에 따라)
     const minBellSamples = Math.floor((options.minBellDuration / 1000) * sampleRate);
     const maxBellSamples = Math.ceil((options.maxBellDuration / 1000) * sampleRate);
+    const windowSize = Math.min(options.fftSize, totalSamples);
     
     // 벨 감지 상태 변수
     let inBell = false;
@@ -274,6 +461,7 @@ class AudioAnalyzer {
     let bellPeakAmplitude = 0;
     let consecutiveHighAmplitudeSamples = 0;
     let minConsecutiveHighSamples = 3; // 복싱 벨소리를 더 잘 감지하기 위해 더 낮게 설정
+    let bellAmplitudePattern = []; // 벨 소리의 진폭 패턴 저장
     
     // 마지막 감지된 벨 시간
     let lastBellTime = -options.minBellInterval;
@@ -283,6 +471,9 @@ class AudioAnalyzer {
     
     // 진행 상황 보고용 변수
     const progressStep = Math.max(1, Math.floor(totalSamples / 20)); // 5% 단위
+    
+    // 분석 간격 (전체 샘플을 적절한 간격으로 분석)
+    const analysisInterval = Math.max(1, Math.floor(windowSize / 4));
     
     // 모든 샘플을 분석
     for (let i = 0; i < totalSamples; i++) {
@@ -303,9 +494,11 @@ class AudioAnalyzer {
           bellStart = i;
           bellPeakAmplitude = amplitude;
           consecutiveHighAmplitudeSamples = 1;
+          bellAmplitudePattern = [amplitude]; // 진폭 패턴 기록 시작
         } else {
           // 진행 중인 벨의 피크 업데이트
           consecutiveHighAmplitudeSamples++;
+          bellAmplitudePattern.push(amplitude); // 진폭 패턴 기록
           if (amplitude > bellPeakAmplitude) {
             bellPeakAmplitude = amplitude;
           }
@@ -320,28 +513,73 @@ class AudioAnalyzer {
             const bellDuration = (bellEnd - bellStart) / sampleRate;
             const bellStartTime = bellStart / sampleRate;
             
-            // 임시 벨 후보 저장
+            // 주파수 분석 수행
+            let frequencyEnergy = 0;
+            let patternSimilarity = 0;
+            
+            // 윈도우 크기보다 충분한 샘플이 있는 경우에만 주파수 분석 수행
+            if (i >= windowSize) {
+              // 벨 소리 주변 오디오 데이터 추출 (벨 소리 앞/중간/뒤 부분 모두 포함)
+              const audioSamples = new Float32Array(windowSize);
+              const startIdx = Math.max(0, bellStart - Math.floor(windowSize / 4));
+              
+              // 샘플 데이터 추출
+              for (let j = 0; j < windowSize; j++) {
+                const sampleIdx = startIdx + j;
+                if (sampleIdx < totalSamples) {
+                  audioSamples[j] = channel.max_sample(sampleIdx);
+                }
+              }
+              
+              // 주파수 분석
+              const frequencyData = this._analyzeFrequency(audioSamples, sampleRate, windowSize);
+              
+              // 벨 소리 주파수 범위의 에너지 계산
+              frequencyEnergy = this._calculateBellFrequencyEnergy(
+                frequencyData, 
+                options.boxingBellMinFreq, 
+                options.boxingBellMaxFreq
+              );
+              
+              // 진폭 패턴 유사도 계산
+              patternSimilarity = this._calculatePatternSimilarity(bellAmplitudePattern);
+              
+              // 디버깅용 주파수 데이터 저장
+              this.debug.frequencyData.push({
+                time: bellStartTime,
+                frequencyData: frequencyData,
+                bellFrequencyEnergy: frequencyEnergy,
+                patternSimilarity: patternSimilarity
+              });
+            }
+            
+            // 벨 후보로 추가
             tempBellCandidates.push({
               start: bellStartTime,
               end: bellStartTime + bellDuration,
               duration: bellDuration,
               peakAmplitude: bellPeakAmplitude,
-              samples: consecutiveHighAmplitudeSamples
+              samples: consecutiveHighAmplitudeSamples,
+              frequencyEnergy: frequencyEnergy,
+              patternSimilarity: patternSimilarity,
+              // 복합 점수 (진폭, 주파수 에너지, 패턴 유사도 결합)
+              bellScore: bellPeakAmplitude * 0.4 + frequencyEnergy * 0.4 + patternSimilarity * 0.2
             });
             
             // 디버깅 로그
-            console.log(`벨 후보 발견: ${bellStartTime.toFixed(3)}초, 길이: ${bellDuration.toFixed(3)}초, 진폭: ${bellPeakAmplitude.toFixed(3)}, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
+            console.log(`벨 후보 발견: ${bellStartTime.toFixed(2)}초, 길이: ${bellDuration.toFixed(3)}초, 진폭: ${bellPeakAmplitude.toFixed(3)}, 주파수 에너지: ${frequencyEnergy.toFixed(3)}, 패턴 유사도: ${patternSimilarity.toFixed(3)}`);
           } else {
             // 연속된 높은 진폭 샘플이 충분하지 않으면 로그만
             if (consecutiveHighAmplitudeSamples > 0) {
               const bellStartTime = bellStart / sampleRate;
-              console.log(`짧은 후보 무시: ${bellStartTime.toFixed(3)}초, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
+              console.log(`짧은 후보 무시: ${bellStartTime.toFixed(2)}초, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
             }
           }
           
           // 상태 초기화
           inBell = false;
           consecutiveHighAmplitudeSamples = 0;
+          bellAmplitudePattern = [];
         }
       }
     }
@@ -352,29 +590,47 @@ class AudioAnalyzer {
       const bellDuration = (bellEnd - bellStart) / sampleRate;
       const bellStartTime = bellStart / sampleRate;
       
+      // 주파수 분석 (가능한 경우)
+      let frequencyEnergy = 0;
+      let patternSimilarity = 0;
+      
+      // 진폭 패턴 유사도 계산
+      patternSimilarity = this._calculatePatternSimilarity(bellAmplitudePattern);
+      
       tempBellCandidates.push({
         start: bellStartTime,
         end: bellStartTime + bellDuration,
         duration: bellDuration,
         peakAmplitude: bellPeakAmplitude,
-        samples: consecutiveHighAmplitudeSamples
+        samples: consecutiveHighAmplitudeSamples,
+        frequencyEnergy: frequencyEnergy,
+        patternSimilarity: patternSimilarity,
+        bellScore: bellPeakAmplitude * 0.4 + frequencyEnergy * 0.4 + patternSimilarity * 0.2
       });
       
-      console.log(`마지막 벨 후보 발견: ${bellStartTime.toFixed(3)}초, 길이: ${bellDuration.toFixed(3)}초, 진폭: ${bellPeakAmplitude.toFixed(3)}, 샘플 수: ${consecutiveHighAmplitudeSamples}`);
+      console.log(`마지막 벨 후보 발견: ${bellStartTime.toFixed(2)}초, 길이: ${bellDuration.toFixed(3)}초, 진폭: ${bellPeakAmplitude.toFixed(3)}`);
     }
     
     // 서로 가까운 벨 후보들을 그룹화하여 하나의 벨로 만들기
     console.log(`총 ${tempBellCandidates.length}개의 벨 후보를 그룹화합니다...`);
     const groupedBells = this._groupBellCandidates(tempBellCandidates, 0.5); // 0.5초 이내 후보들은 그룹화
     
-    // 그룹화된 벨 후보들을 처리
+    // 그룹화된 벨 후보들을 점수 기준으로 정렬
+    groupedBells.sort((a, b) => b.bellScore - a.bellScore);
+    
+    // 벨 점수가 높은 순서대로 처리
     for (const bell of groupedBells) {
       this.debug.candidateBells.push(bell);
       
-      // 벨 길이 조건 확인 (최소 길이는 매우 짧게 설정)
-      const effectiveMinDuration = 0.03; // 30ms
+      // 주파수 에너지와 패턴 유사도를 기준으로 벨 감지 결정
+      const isFrequencyMatch = bell.frequencyEnergy >= options.frequencyEnergyThreshold;
+      const isPatternMatch = bell.patternSimilarity >= options.patternSimilarityThreshold;
+      const isHighAmplitude = bell.peakAmplitude >= effectiveThreshold;
       
-      if (bell.duration >= effectiveMinDuration && 
+      // 복싱 벨 소리는 진폭이 높고, 특정 주파수 범위에 에너지가 집중되며, 특정 패턴을 가짐
+      const isBellSound = isHighAmplitude && (isFrequencyMatch || isPatternMatch);
+      
+      if (isBellSound && bell.duration >= options.minBellDuration / 1000 && 
           bell.duration <= options.maxBellDuration / 1000) {
         
         // 이전 벨과의 간격 확인
@@ -385,7 +641,7 @@ class AudioAnalyzer {
           
           this.debug.acceptedBells.push(bell);
           
-          console.log(`벨 소리 감지: ${bell.start.toFixed(2)}초, 길이: ${bell.duration.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 그룹화됨: ${bell.grouped ? 'Yes' : 'No'}`);
+          console.log(`벨 소리 감지: ${bell.start.toFixed(2)}초, 길이: ${bell.duration.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 점수: ${bell.bellScore.toFixed(3)}, 그룹화됨: ${bell.grouped ? 'Yes' : 'No'}`);
         } else {
           // 간격 조건으로 거부
           this.debug.rejectedBells.push({
@@ -395,11 +651,21 @@ class AudioAnalyzer {
           });
         }
       } else {
-        // 길이 조건으로 거부
+        // 조건 미달로 거부
+        let reason = '';
+        if (!isBellSound) {
+          reason = '벨 소리 특성 미달';
+          if (!isHighAmplitude) reason += ' (낮은 진폭)';
+          if (!isFrequencyMatch) reason += ' (주파수 불일치)';
+          if (!isPatternMatch) reason += ' (패턴 불일치)';
+        } else {
+          reason = '길이 조건 미달';
+        }
+        
         this.debug.rejectedBells.push({
           ...bell,
-          reason: '길이 조건 미달',
-          minDuration: effectiveMinDuration,
+          reason: reason,
+          minDuration: options.minBellDuration / 1000,
           maxDuration: options.maxBellDuration / 1000
         });
       }
@@ -413,21 +679,13 @@ class AudioAnalyzer {
     
     if (bellTimestamps.length === 0) {
       console.log('주의: 벨 소리가 감지되지 않았습니다.');
-      console.log('임계값을 낮추거나 (현재: ' + effectiveThreshold.toFixed(2) + ') 길이 조건을 조정해보세요.');
+      console.log('임계값을 낮추거나 (현재: ' + effectiveThreshold.toFixed(2) + ') 주파수 설정을 조정해보세요.');
       
-      // 후보 벨들의 진폭 정보 출력
+      // 후보 벨들의 정보 출력
       if (this.debug.candidateBells.length > 0) {
-        console.log('후보 벨 소리들의 진폭 정보:');
+        console.log('후보 벨 소리들의 정보:');
         this.debug.candidateBells.forEach(bell => {
-          console.log(`시작: ${bell.start.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 길이: ${bell.duration.toFixed(2)}초, 그룹화됨: ${bell.grouped ? 'Yes' : 'No'}`);
-        });
-      }
-      
-      // 거부된 벨들의 정보 출력
-      if (this.debug.rejectedBells.length > 0) {
-        console.log('거부된 벨 소리 정보:');
-        this.debug.rejectedBells.forEach(bell => {
-          console.log(`시작: ${bell.start.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 길이: ${bell.duration.toFixed(2)}초, 거부 이유: ${bell.reason}`);
+          console.log(`시작: ${bell.start.toFixed(2)}초, 진폭: ${bell.peakAmplitude.toFixed(3)}, 길이: ${bell.duration.toFixed(2)}초, 점수: ${bell.bellScore ? bell.bellScore.toFixed(3) : 'N/A'}`);
         });
       }
       
@@ -437,10 +695,6 @@ class AudioAnalyzer {
           0.05,
           this.debug.candidateBells.reduce((min, b) => Math.min(min, b.peakAmplitude), 1) * 0.9
         );
-        console.log(`제안: 진폭 임계값을 ${suggestedThreshold.toFixed(2)}로 시도해보세요.`);
-      } else if (maxAmplitude > 0) {
-        // 후보가 없다면 최대 진폭의 60%를 제안
-        const suggestedThreshold = Math.max(0.05, maxAmplitude * 0.6);
         console.log(`제안: 진폭 임계값을 ${suggestedThreshold.toFixed(2)}로 시도해보세요.`);
       }
     }
@@ -474,11 +728,26 @@ class AudioAnalyzer {
         // 그룹화
         currentGroup.end = Math.max(currentGroup.end, current.end);
         currentGroup.duration = currentGroup.end - currentGroup.start;
-        currentGroup.peakAmplitude = Math.max(currentGroup.peakAmplitude, current.peakAmplitude);
+        
+        // 그룹 내에서 가장 높은 점수를 가진 후보의 속성으로 업데이트
+        const currentScore = current.bellScore || 0;
+        const groupScore = currentGroup.bellScore || 0;
+        
+        if (currentScore > groupScore) {
+          currentGroup.bellScore = currentScore;
+          currentGroup.frequencyEnergy = current.frequencyEnergy;
+          currentGroup.patternSimilarity = current.patternSimilarity;
+        }
+        
+        // 항상 최대 진폭 값과 샘플 수는 누적
+        if (current.peakAmplitude > currentGroup.peakAmplitude) {
+          currentGroup.peakAmplitude = current.peakAmplitude;
+        }
+        
         currentGroup.samples += current.samples;
         currentGroup.grouped = true;
         
-        console.log(`후보 그룹화: ${current.start.toFixed(3)}초 후보를 ${currentGroup.start.toFixed(3)}초 그룹에 병합`);
+        console.log(`후보 그룹화: ${current.start.toFixed(3)}초 후보를 ${currentGroup.start.toFixed(3)}초 그룹에 병합 (점수: ${currentGroup.bellScore.toFixed(3)})`);
       } else {
         // 이전 그룹 저장하고 새 그룹 시작
         result.push(currentGroup);
@@ -490,6 +759,10 @@ class AudioAnalyzer {
     result.push(currentGroup);
     
     console.log(`${candidates.length}개의 후보를 ${result.length}개의 그룹으로 통합했습니다.`);
+    
+    // 벨 점수로 정렬
+    result.sort((a, b) => (b.bellScore || 0) - (a.bellScore || 0));
+    
     return result;
   }
 
