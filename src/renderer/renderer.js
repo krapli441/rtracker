@@ -3,6 +3,14 @@ const path = require("path");
 const fs = require("fs");
 const audioAnalyzer = require("../utils/audioAnalyzer");
 
+// WaveSurfer 모듈 불러오기 (7.x 버전)
+let WaveSurfer;
+try {
+  WaveSurfer = require("wavesurfer.js");
+} catch (e) {
+  console.error("WaveSurfer 불러오기 오류:", e);
+}
+
 // DOM 요소
 const uploadArea = document.getElementById("uploadArea");
 const uploadButton = document.getElementById("uploadButton");
@@ -36,6 +44,11 @@ let templateLoaded = false;
 // 복싱 경기 관련 설정
 let roundDuration = 180; // 3분 (초 단위)
 let restDuration = 30; // 30초 (초 단위)
+
+// 전역 변수 선언
+let videoFilePath;
+let audioFilePath;
+let wavesurfer; // WaveSurfer 객체 전역 변수
 
 // 초기화
 window.addEventListener("DOMContentLoaded", () => {
@@ -315,60 +328,286 @@ function setupEventListeners() {
   });
 }
 
-// 비디오 로드 함수
+// WaveSurfer 초기화 함수
+function initWaveSurfer() {
+  // 이미 초기화된 경우 제거
+  if (wavesurfer) {
+    wavesurfer.destroy();
+  }
+
+  try {
+    // WaveSurfer.js 7.x 버전용 초기화 코드
+    wavesurfer = WaveSurfer.create({
+      container: waveformEl,
+      waveColor: "#3498db",
+      progressColor: "#2980b9",
+      cursorColor: "#e74c3c",
+      barWidth: 2,
+      barGap: 1,
+      height: 100,
+      barRadius: 2,
+      normalize: true,
+      // 7.x 버전에서는 플러그인을 다르게 적용
+    });
+
+    console.log("WaveSurfer 인스턴스 생성됨:", wavesurfer);
+
+    // WaveSurfer 이벤트 등록
+    wavesurfer.on("ready", function () {
+      console.log("WaveSurfer 로드 완료");
+      hideLoading();
+      // 기존에 있던 마커와 구간 정보가 있다면 표시
+      if (bellTimestamps.length > 0) {
+        displayWaveformMarkers(bellTimestamps);
+      }
+    });
+
+    // 클릭 시 비디오 해당 위치로 이동
+    wavesurfer.on("click", function (timestamp) {
+      console.log("파형 클릭 위치:", timestamp);
+      if (videoPlayer) {
+        videoPlayer.currentTime = timestamp;
+      }
+    });
+
+    // 오류 이벤트 처리
+    wavesurfer.on("error", function (err) {
+      console.error("WaveSurfer 오류 발생:", err);
+      hideLoading();
+      alert("오디오 파형 로드 중 오류가 발생했습니다.");
+    });
+
+    return wavesurfer;
+  } catch (error) {
+    console.error("WaveSurfer 초기화 오류:", error);
+    hideLoading();
+    alert("WaveSurfer 초기화에 실패했습니다: " + error.message);
+    return null;
+  }
+}
+
+// 파형에 벨 소리 마커 표시 함수 (WaveSurfer.js 7.x 버전용)
+function displayWaveformMarkers(timestamps, debug = null) {
+  if (!wavesurfer) {
+    console.log("WaveSurfer가 초기화되지 않았습니다.");
+    return;
+  }
+
+  try {
+    // 비디오 총 길이
+    const totalDuration = videoPlayer.duration || 1;
+    bellTimestamps = [...timestamps]; // 전역 변수 업데이트
+
+    // 벨 소리 위치 표시 (custom markers 사용)
+    // 먼저 기존 마커 제거
+    const existingMarkers = waveformEl.querySelectorAll(".wavesurfer-marker");
+    existingMarkers.forEach((marker) => marker.remove());
+
+    // 새 마커 추가
+    timestamps.forEach((timestamp, index) => {
+      // 커스텀 마커 요소 생성 및 추가
+      const marker = document.createElement("div");
+      marker.className = "wavesurfer-marker";
+      marker.style.left = (timestamp / totalDuration) * 100 + "%";
+      marker.title = `벨 #${index + 1}: ${formatTime(timestamp)}`;
+      marker.setAttribute("data-time", timestamp);
+
+      // 클릭 이벤트 추가
+      marker.addEventListener("click", () => {
+        if (videoPlayer) {
+          videoPlayer.currentTime = timestamp;
+          videoPlayer.play();
+        }
+        wavesurfer.seekTo(timestamp / totalDuration);
+      });
+
+      waveformEl.appendChild(marker);
+    });
+
+    // 벨 소리 감지 결과 정보 표시
+    const waveformMarkers = document.getElementById("waveformMarkers");
+    if (!waveformMarkers) return;
+
+    if (timestamps.length === 0) {
+      let infoHTML = `<p class="no-bells">벨 소리가 감지되지 않았습니다. 임계값을 낮춰보세요.</p>`;
+
+      // 디버깅 정보가 있다면 표시
+      if (debug && debug.candidateBells && debug.candidateBells.length > 0) {
+        // 가장 적절한 임계값 계산
+        const suggestedThreshold = Math.max(
+          0.05,
+          debug.candidateBells.reduce(
+            (min, b) => Math.min(min, b.peakAmplitude),
+            1
+          ) * 0.9
+        ).toFixed(2);
+
+        infoHTML += `<div class="debug-info">
+          <h4>문제 해결 정보</h4>
+          <p>${
+            debug.candidateBells.length
+          }개의 벨 소리 후보가 있지만 조건에 맞지 않아 제외되었습니다.</p>
+          
+          <details>
+            <summary>후보 벨 소리 정보 (${
+              debug.candidateBells.length
+            }개)</summary>
+            <ul class="debug-list">
+              ${debug.candidateBells
+                .map(
+                  (bell) =>
+                    `<li>시작: ${formatTime(
+                      bell.start
+                    )}, 진폭: ${bell.peakAmplitude.toFixed(
+                      3
+                    )}, 길이: ${bell.duration.toFixed(2)}초
+                  <button class="btn-small btn-preview" data-time="${
+                    bell.start
+                  }">미리보기</button>
+                </li>`
+                )
+                .join("")}
+            </ul>
+          </details>
+          
+          <details>
+            <summary>거부된 벨 소리 정보 (${
+              debug.rejectedBells.length
+            }개)</summary>
+            <ul class="debug-list">
+              ${debug.rejectedBells
+                .map(
+                  (bell) =>
+                    `<li>시작: ${formatTime(
+                      bell.start
+                    )}, 진폭: ${bell.peakAmplitude.toFixed(
+                      3
+                    )}, 길이: ${bell.duration.toFixed(2)}초, 거부 이유: ${
+                      bell.reason
+                    }
+                  <button class="btn-small btn-preview" data-time="${
+                    bell.start
+                  }">미리보기</button>
+                </li>`
+                )
+                .join("")}
+            </ul>
+          </details>
+          
+          <p class="setting-hint">제안: 진폭 임계값을 ${suggestedThreshold}로 시도해보세요.</p>
+        </div>`;
+      }
+
+      waveformMarkers.innerHTML = infoHTML;
+    } else {
+      waveformMarkers.innerHTML = "";
+    }
+
+    // 미리보기 버튼 이벤트 리스너 추가
+    document.querySelectorAll(".btn-preview").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const time = parseFloat(e.target.dataset.time);
+        if (videoPlayer) {
+          videoPlayer.currentTime = time;
+          videoPlayer.play();
+        }
+      });
+    });
+  } catch (error) {
+    console.error("마커 표시 오류:", error);
+  }
+}
+
+// 오디오 추출 및 로드 함수
+async function loadAudioFile(audioPath) {
+  try {
+    if (!wavesurfer) {
+      initWaveSurfer();
+    }
+
+    if (!wavesurfer) {
+      throw new Error("WaveSurfer 초기화 실패");
+    }
+
+    showLoading("오디오 파형 로드 중...");
+    console.log("오디오 파일 로드 시도:", audioPath);
+
+    // WaveSurfer.js 7.x 버전 방식으로 로드
+    await wavesurfer.load(audioPath);
+    console.log("WaveSurfer 오디오 로드 성공");
+
+    return true;
+  } catch (error) {
+    hideLoading();
+    console.error("오디오 파형 로드 중 오류:", error);
+    alert("오디오 파형 로드 중 오류가 발생했습니다: " + error.message);
+    return false;
+  }
+}
+
+// 기존 loadVideo 함수 수정 (WaveSurfer 통합)
 async function loadVideo(filePath) {
   try {
     currentVideoPath = filePath;
+    videoFilePath = filePath;
+    showLoading("비디오 로드 중...");
 
-    // 비디오 요소 업데이트
-    videoPlayer.src = `file://${filePath}`;
+    // 업로드 영역 숨기고 비디오 플레이어 표시
+    document.getElementById("uploadArea").style.display = "none";
     videoPlayer.style.display = "block";
-    uploadArea.style.display = "none";
-
-    // 비디오 정보 가져오기
-    const filename = path.basename(filePath);
-    const fileSize = fs.statSync(filePath).size;
-    const fileSizeMB = (fileSize / (1024 * 1024)).toFixed(2);
-
-    // 이전 분석 데이터 초기화
-    waveformData = null;
-    bellTimestamps = [];
-    debugInfo = null;
-
-    // 오디오 추출
-    showLoading(`오디오 추출 중... (${filename}, ${fileSizeMB} MB)`);
-    audioPath = await extractAudio(filePath);
-
-    // 파형 표시
     waveformContainer.style.display = "block";
 
-    // 간단한 파형 시각화
-    try {
-      const audioFileSize = fs.statSync(audioPath).size;
-      const audioFileSizeMB = (audioFileSize / (1024 * 1024)).toFixed(2);
+    // 비디오 파일 경로 설정
+    videoPlayer.src = filePath;
 
-      waveformEl.innerHTML = `<div class="waveform-placeholder">
-        <h3>오디오 추출 완료</h3>
-        <p>파일명: ${filename}</p>
-        <p>비디오 크기: ${fileSizeMB} MB</p>
-        <p>오디오 크기: ${audioFileSizeMB} MB</p>
-        <p>'벨 소리 감지' 버튼을 클릭하여 분석을 시작하세요</p>
-        <p class="note">${
-          audioFileSizeMB > 30
-            ? "⚠️ 큰 파일은 분석 시간이 오래 걸릴 수 있습니다."
-            : ""
-        }</p>
-      </div>`;
-    } catch (error) {
-      console.error("파형 시각화 초기화 오류:", error);
-    }
+    // 비디오 메타데이터 로드 완료 대기
+    await new Promise((resolve) => {
+      videoPlayer.onloadedmetadata = resolve;
+      videoPlayer.onerror = (e) => {
+        console.error("비디오 로드 오류:", e);
+        resolve();
+      };
+    });
+
+    console.log("비디오 로드 완료:", filePath);
+    console.log(
+      `비디오 정보: 길이=${videoPlayer.duration}초, 해상도=${videoPlayer.videoWidth}x${videoPlayer.videoHeight}`
+    );
+
+    // 비디오에서 오디오 추출
+    updateLoadingMessage("오디오 추출 중...");
+    audioPath = await extractAudio(filePath);
+    audioFilePath = audioPath;
+    console.log("오디오 추출 완료:", audioPath);
+
+    // WaveSurfer로 오디오 파형 로드
+    updateLoadingMessage("파형 생성 중...");
+    // WaveSurfer 초기화 및 오디오 로드
+    await loadAudioFile(audioPath);
+
+    // 비디오가 재생될 때 WaveSurfer 동기화
+    videoPlayer.addEventListener("timeupdate", function () {
+      if (wavesurfer && !wavesurfer.isPlaying()) {
+        wavesurfer.setTime(videoPlayer.currentTime);
+      }
+    });
+
+    // 비디오가 일시정지되면 WaveSurfer도 일시정지
+    videoPlayer.addEventListener("pause", function () {
+      if (wavesurfer && wavesurfer.isPlaying()) {
+        wavesurfer.pause();
+      }
+    });
+
+    // 비디오가 재생되면 WaveSurfer도 재생
+    videoPlayer.addEventListener("play", function () {
+      if (wavesurfer && !wavesurfer.isPlaying()) {
+        wavesurfer.play();
+      }
+    });
 
     // 분석 버튼 활성화
-    analyzeButton.disabled = false;
-
-    // 최적화 버튼 비활성화 (아직 waveformData가 없음)
-    const optimizeButton = document.getElementById("optimizeButton");
-    if (optimizeButton) optimizeButton.disabled = true;
+    document.getElementById("analyzeButton").disabled = false;
 
     hideLoading();
   } catch (error) {
@@ -381,292 +620,6 @@ async function loadVideo(filePath) {
 // 오디오 추출 함수
 async function extractAudio(videoPath) {
   return await ipcRenderer.invoke("extract-audio", videoPath);
-}
-
-// 파형에 벨 소리 마커 표시 함수
-function displayWaveformMarkers(timestamps, debug = null) {
-  // 간단한 시각화로 대체
-  const waveformMarkers = document.getElementById("waveformMarkers");
-  if (!waveformMarkers) return;
-
-  // 비디오 총 길이
-  const totalDuration = videoPlayer.duration || 1;
-
-  // 마커 생성
-  let markersHTML = '<div class="waveform-timeline">';
-
-  // 시간 표시선 추가
-  for (let i = 0; i <= Math.floor(totalDuration); i += 30) {
-    const position = (i / totalDuration) * 100;
-    markersHTML += `<div class="time-marker" style="left: ${position}%">
-      <div class="time-marker-line"></div>
-      <div class="time-marker-label">${formatTime(i)}</div>
-    </div>`;
-  }
-
-  // 복싱 타임라인 구간 표시 (분석된 벨 시간 기반)
-  if (timestamps.length > 0) {
-    // 세그먼트 정보 생성
-    const segments = [];
-    let lastType = "unknown";
-
-    // 종소리 간격 분석하여 타입 결정
-    for (let i = 0; i < timestamps.length - 1; i++) {
-      const currentBell = timestamps[i];
-      const nextBell = timestamps[i + 1];
-      const interval = nextBell - currentBell;
-
-      let segmentType = "unknown";
-
-      // 3분(180초)에 가까운 간격인지 확인
-      if (Math.abs(interval - roundDuration) < 10) {
-        segmentType = "round";
-      }
-      // 30초에 가까운 간격인지 확인
-      else if (Math.abs(interval - restDuration) < 5) {
-        segmentType = "rest";
-      }
-
-      segments.push({
-        start: currentBell,
-        end: nextBell,
-        type: segmentType,
-        duration: interval,
-      });
-
-      lastType = segmentType;
-    }
-
-    // 구간별 시각화
-    segments.forEach((segment, index) => {
-      const startPos = (segment.start / totalDuration) * 100;
-      const endPos = (segment.end / totalDuration) * 100;
-      const width = endPos - startPos;
-
-      let segmentClass = "segment-unknown";
-      let segmentLabel = "기타";
-
-      if (segment.type === "round") {
-        segmentClass = "segment-round";
-        segmentLabel = `${Math.floor(index / 2) + 1}라운드`;
-      } else if (segment.type === "rest") {
-        segmentClass = "segment-rest";
-        segmentLabel = "휴식";
-      }
-
-      markersHTML += `<div class="segment ${segmentClass}" 
-        style="left: ${startPos}%; width: ${width}%;" 
-        title="${segmentLabel}: ${formatTime(segment.start)} ~ ${formatTime(
-        segment.end
-      )}">
-        <span class="segment-label">${segmentLabel}</span>
-      </div>`;
-    });
-  }
-
-  // 후보 및 거부된 벨 소리도 표시 (낮은 투명도로)
-  if (debug) {
-    // 후보 벨 표시 (회색)
-    if (debug.candidateBells && debug.candidateBells.length > 0) {
-      debug.candidateBells.forEach((bell) => {
-        // 수락된 벨과 중복되지 않는 경우에만 표시
-        if (
-          !debug.acceptedBells.find((b) => Math.abs(b.start - bell.start) < 0.1)
-        ) {
-          const position = (bell.start / totalDuration) * 100;
-          markersHTML += `<div class="bell-candidate" style="left: ${position}%" 
-            data-time="${bell.start}" 
-            title="후보 벨: ${formatTime(
-              bell.start
-            )}, 진폭: ${bell.peakAmplitude.toFixed(2)}"></div>`;
-        }
-      });
-    }
-
-    // 거부된 벨 표시 (주황색)
-    if (debug.rejectedBells && debug.rejectedBells.length > 0) {
-      debug.rejectedBells.forEach((bell) => {
-        const position = (bell.start / totalDuration) * 100;
-        const reason = bell.reason.replace(/"/g, "&quot;");
-        markersHTML += `<div class="bell-rejected" style="left: ${position}%" 
-          data-time="${bell.start}" 
-          title="거부된 벨: ${formatTime(bell.start)}, 이유: ${reason}"></div>`;
-      });
-    }
-  }
-
-  // 감지된 벨 소리 표시 (빨간색)
-  if (totalDuration > 0 && timestamps.length > 0) {
-    timestamps.forEach((timestamp, index) => {
-      const position = (timestamp / totalDuration) * 100;
-      markersHTML += `<div class="bell-marker" style="left: ${position}%" 
-        data-time="${timestamp}" 
-        data-index="${index + 1}" 
-        title="벨 소리 #${index + 1}: ${formatTime(timestamp)}"></div>`;
-    });
-  }
-
-  markersHTML += "</div>";
-
-  // 벨 소리 감지 결과 정보
-  if (timestamps.length === 0) {
-    markersHTML += `<p class="no-bells">벨 소리가 감지되지 않았습니다. 임계값을 낮춰보세요.</p>`;
-
-    // 디버깅 정보가 있다면 표시
-    if (debug && debug.candidateBells && debug.candidateBells.length > 0) {
-      // 가장 적절한 임계값 계산
-      const suggestedThreshold = Math.max(
-        0.05,
-        debug.candidateBells.reduce(
-          (min, b) => Math.min(min, b.peakAmplitude),
-          1
-        ) * 0.9
-      ).toFixed(2);
-
-      markersHTML += `<div class="debug-info">
-        <h4>문제 해결 정보</h4>
-        <p>${
-          debug.candidateBells.length
-        }개의 벨 소리 후보가 있지만 조건에 맞지 않아 제외되었습니다.</p>
-        
-        <details>
-          <summary>후보 벨 소리 정보 (${
-            debug.candidateBells.length
-          }개)</summary>
-          <ul class="debug-list">
-            ${debug.candidateBells
-              .map(
-                (bell) =>
-                  `<li>시작: ${formatTime(
-                    bell.start
-                  )}, 진폭: ${bell.peakAmplitude.toFixed(
-                    3
-                  )}, 길이: ${bell.duration.toFixed(2)}초
-                <button class="btn-small btn-preview" data-time="${
-                  bell.start
-                }">미리보기</button>
-              </li>`
-              )
-              .join("")}
-          </ul>
-        </details>
-        
-        <details>
-          <summary>거부된 벨 소리 정보 (${
-            debug.rejectedBells.length
-          }개)</summary>
-          <ul class="debug-list">
-            ${debug.rejectedBells
-              .map(
-                (bell) =>
-                  `<li>시작: ${formatTime(
-                    bell.start
-                  )}, 진폭: ${bell.peakAmplitude.toFixed(
-                    3
-                  )}, 길이: ${bell.duration.toFixed(2)}초, 거부 이유: ${
-                    bell.reason
-                  }
-                <button class="btn-small btn-preview" data-time="${
-                  bell.start
-                }">미리보기</button>
-              </li>`
-              )
-              .join("")}
-          </ul>
-        </details>
-        
-        <p>제안: 임계값을 <strong>${suggestedThreshold}</strong>로 설정하세요. <button id="suggestButton" class="btn-small">임계값 자동 조정</button></p>
-      </div>`;
-    }
-  } else {
-    // 복싱 세그먼트 정보 요약 표시
-    markersHTML += `<div class="segments-summary">
-      <h4>복싱 세그먼트 분석 결과</h4>
-      <p>총 ${timestamps.length}개의 벨 소리가 감지되었습니다.</p>
-      
-      <details>
-        <summary>세그먼트 정보 펼치기</summary>
-        <ul class="segments-list">`;
-
-    // 벨 소리가 하나만 감지된 경우
-    if (timestamps.length < 2) {
-      markersHTML += `<li class="segment-info-message">
-        벨 소리가 2개 이상 감지되어야 의미 있는 세그먼트를 분석할 수 있습니다. 
-        <br>현재 ${timestamps.length}개의 벨 소리만 감지되었습니다.
-        <br>임계값을 조정하여 더 많은 벨 소리를 감지해보세요.
-      </li>`;
-    } else {
-      // 간격에 따른 세그먼트 유형 표시
-      for (let i = 0; i < timestamps.length - 1; i++) {
-        const currentBell = timestamps[i];
-        const nextBell = timestamps[i + 1];
-        const interval = nextBell - currentBell;
-
-        let segmentType = "알 수 없음";
-        let segmentClass = "segment-unknown";
-
-        // 3분(180초)에 가까운 간격인지 확인
-        if (Math.abs(interval - roundDuration) < 10) {
-          segmentType = `라운드 ${Math.floor(i / 2) + 1}`;
-          segmentClass = "segment-round";
-        }
-        // 30초에 가까운 간격인지 확인
-        else if (Math.abs(interval - restDuration) < 5) {
-          segmentType = "휴식 시간";
-          segmentClass = "segment-rest";
-        }
-
-        markersHTML += `<li class="${segmentClass}">
-          ${formatTime(currentBell)} ~ ${formatTime(nextBell)} 
-          (${interval.toFixed(1)}초): <strong>${segmentType}</strong>
-          <button class="btn-small btn-preview" data-start="${currentBell}" data-end="${nextBell}">미리보기</button>
-        </li>`;
-      }
-    }
-
-    markersHTML += `</ul>
-        </details>
-      </div>`;
-  }
-
-  waveformMarkers.innerHTML = markersHTML;
-
-  // 미리보기 버튼 이벤트 리스너 추가
-  document.querySelectorAll(".btn-preview").forEach((button) => {
-    button.addEventListener("click", (e) => {
-      const time = e.target.getAttribute("data-time");
-      const start = e.target.getAttribute("data-start");
-      const end = e.target.getAttribute("data-end");
-
-      // 단일 지점 이동
-      if (time) {
-        videoPlayer.currentTime = parseFloat(time);
-        videoPlayer.play();
-        setTimeout(() => videoPlayer.pause(), 1500); // 1.5초 재생 후 정지
-      }
-      // 구간 미리보기
-      else if (start && end) {
-        videoPlayer.currentTime = parseFloat(start);
-        videoPlayer.play();
-
-        // 구간 종료 시점에 정지
-        const duration = parseFloat(end) - parseFloat(start);
-        setTimeout(() => videoPlayer.pause(), duration * 1000);
-      }
-    });
-  });
-
-  // 자동 임계값 조정 버튼 이벤트
-  const suggestButton = document.getElementById("suggestButton");
-  if (suggestButton) {
-    suggestButton.addEventListener("click", () => {
-      const suggestedThreshold =
-        suggestButton.parentElement.querySelector("strong").textContent;
-      amplitudeThresholdInput.value = suggestedThreshold;
-      amplitudeThresholdValue.textContent = suggestedThreshold;
-      analyzeButton.click(); // 자동으로 다시 분석
-    });
-  }
 }
 
 // 분할된 세그먼트 표시 함수

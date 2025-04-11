@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RTracker - 복싱장 영상 분석 도구</title>
     <link rel="stylesheet" href="styles/main.css" />
+    <!-- WaveSurfer.js와 플러그인은 이제 JS에서 모듈로 불러옵니다 -->
   </head>
   <body>
     <div class="app-container">
@@ -38,8 +39,15 @@
         </div>
 
         <div class="waveform-container" id="waveformContainer">
-          <div class="waveform" id="waveform"></div>
+          <!-- WaveSurfer 컨테이너 -->
+          <div class="waveform-wrapper">
+            <div id="waveform"></div>
+            <div id="waveform-timeline"></div>
+          </div>
+
+          <!-- 벨 소리 마커 정보 표시 영역 -->
           <div id="waveformMarkers"></div>
+
           <div class="waveform-controls">
             <div class="detection-settings">
               <h3>벨 소리 감지 설정</h3>

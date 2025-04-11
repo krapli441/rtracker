@@ -30,8 +30,10 @@
   "homepage": "https://github.com/krapli441/rtracker#readme",
   "dependencies": {
     "electron-builder": "^23.6.0",
+    "fft-js": "^0.0.12",
     "fluent-ffmpeg": "^2.1.2",
     "waveform-data": "^4.3.0",
+    "wavesurfer.js": "^7.9.4",
     "web-audio-api": "^0.2.2"
   },
   "devDependencies": {
