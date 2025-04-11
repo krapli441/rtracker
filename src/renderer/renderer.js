@@ -27,6 +27,10 @@ const filterLowBtn = document.getElementById("filter-low");
 const filterMidBtn = document.getElementById("filter-mid");
 const filterHighBtn = document.getElementById("filter-high");
 
+// 오디오 분석 버튼 추가
+const analyzeBtn = document.getElementById("analyze-audio-btn");
+const analysisResultEl = document.getElementById("analysis-result");
+
 // 현재 선택된 비디오 경로
 let currentVideoPath = null;
 // Web Audio API 관련 변수
@@ -69,6 +73,11 @@ selectVideoBtn.addEventListener("click", async () => {
 
     if (filePath) {
       loadVideo(filePath);
+
+      // 분석 버튼 활성화
+      if (analyzeBtn) {
+        analyzeBtn.disabled = false;
+      }
     }
   } catch (error) {
     console.error("비디오 선택 중 오류 발생:", error);
@@ -796,3 +805,373 @@ window.addEventListener("resize", function () {
     }
   }
 });
+
+// 오디오 분석 버튼 이벤트 리스너 (추가된 부분)
+if (analyzeBtn) {
+  analyzeBtn.addEventListener("click", async () => {
+    if (!currentVideoPath) {
+      alert("먼저 비디오를 선택해주세요.");
+      return;
+    }
+
+    try {
+      // 분석 중임을 표시
+      analyzeBtn.disabled = true;
+      analyzeBtn.textContent = "분석 중...";
+
+      // 오디오 일괄 분석 실행
+      await analyzeAudioInBatches();
+
+      // 분석 완료 후 버튼 상태 복원
+      analyzeBtn.disabled = false;
+      analyzeBtn.textContent = "오디오 분석하기";
+    } catch (error) {
+      console.error("오디오 분석 중 오류 발생:", error);
+      alert("오디오 분석 중 오류가 발생했습니다.");
+      analyzeBtn.disabled = false;
+      analyzeBtn.textContent = "오디오 분석하기";
+    }
+  });
+}
+
+// 오디오를 일괄 분석하는 함수
+async function analyzeAudioInBatches() {
+  if (!videoPlayer || !audioContext) {
+    console.error(
+      "비디오 플레이어 또는 오디오 컨텍스트가 초기화되지 않았습니다."
+    );
+    return;
+  }
+
+  // 현재 재생 중인 경우 일시 정지
+  const wasPlaying = !videoPlayer.paused;
+  if (wasPlaying) {
+    videoPlayer.pause();
+  }
+
+  // 분석 결과 초기화
+  const detectionResults = [];
+
+  // 원본 위치 저장
+  const originalTime = videoPlayer.currentTime;
+
+  // 비디오 총 길이
+  const duration = videoPlayer.duration;
+
+  // 분석 배치 크기 (초 단위)
+  const batchSize = 0.1; // 100ms 단위로 분석
+  const totalBatches = Math.ceil(duration / batchSize);
+
+  // 오디오 분석을 위한 새로운 AnalyserNode 생성 (기존 분석기와 별도로 동작)
+  const batchAnalyser = audioContext.createAnalyser();
+  batchAnalyser.fftSize = 2048;
+
+  // 오디오 소스가 이미 연결되어 있는지 확인
+  // 참고: audioSource는 이미 initAudioAnalyser에서 생성되었음
+  if (audioSource) {
+    // 분석기를 오디오 소스에 추가로 연결
+    audioSource.connect(batchAnalyser);
+  } else {
+    console.error("오디오 소스가 초기화되지 않았습니다.");
+    return;
+  }
+
+  // 분석 배치 처리용 변수
+  const frequencyData = new Uint8Array(batchAnalyser.frequencyBinCount);
+  let consecutiveDetections = 0;
+  let lastDetectionTime = -3; // 시작 시 바로 감지되지 않도록 -3초로 설정
+
+  console.log(
+    `오디오 분석 시작: 총 ${totalBatches}개 배치, 비디오 길이: ${formatTime(
+      Math.floor(duration / 60)
+    )}:${formatTime(Math.floor(duration % 60))}`
+  );
+
+  // 분석 진행 상태 표시
+  let progressIndicator = document.createElement("div");
+  progressIndicator.style.width = "100%";
+  progressIndicator.style.height = "20px";
+  progressIndicator.style.backgroundColor = "#333";
+  progressIndicator.style.marginTop = "10px";
+  progressIndicator.style.position = "relative";
+
+  let progressBar = document.createElement("div");
+  progressBar.style.width = "0%";
+  progressBar.style.height = "100%";
+  progressBar.style.backgroundColor = "#007bff";
+  progressBar.style.transition = "width 0.3s";
+
+  let progressText = document.createElement("div");
+  progressText.style.position = "absolute";
+  progressText.style.top = "0";
+  progressText.style.left = "0";
+  progressText.style.width = "100%";
+  progressText.style.height = "100%";
+  progressText.style.display = "flex";
+  progressText.style.alignItems = "center";
+  progressText.style.justifyContent = "center";
+  progressText.style.color = "white";
+  progressText.textContent = "0%";
+
+  progressIndicator.appendChild(progressBar);
+  progressIndicator.appendChild(progressText);
+
+  if (analysisResultEl) {
+    analysisResultEl.innerHTML = "<h4>분석 중...</h4>";
+    analysisResultEl.appendChild(progressIndicator);
+  }
+
+  // 배치 처리
+  for (let i = 0; i < totalBatches; i++) {
+    const currentTime = i * batchSize;
+
+    // 중간 진행 상태 업데이트
+    if (i % 10 === 0) {
+      const progress = Math.round((i / totalBatches) * 100);
+      progressBar.style.width = `${progress}%`;
+      progressText.textContent = `${progress}% (${formatTime(
+        Math.floor(currentTime / 60)
+      )}:${formatTime(Math.floor(currentTime % 60))})`;
+
+      // UI 업데이트를 위한 작은 지연
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    // 오디오 데이터 분석
+    try {
+      // 현재 시간에 대한 오디오 데이터 가져오기
+      videoPlayer.currentTime = currentTime;
+
+      // 브라우저가 시간 업데이트를 처리할 수 있도록 짧은 지연
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      // 주파수 데이터 가져오기
+      batchAnalyser.getByteFrequencyData(frequencyData);
+
+      // 종소리 주파수 범위별 강도 측정
+      let bellFrequencyIntensities = BELL_FREQUENCY_RANGES.map((range) => ({
+        range,
+        intensity: 0,
+      }));
+
+      // 주파수 데이터 분석
+      for (let j = 0; j < frequencyData.length; j++) {
+        const frequency =
+          (j * audioContext.sampleRate) / (batchAnalyser.frequencyBinCount * 2);
+
+        // 각 범위별 강도 측정
+        for (let k = 0; k < bellFrequencyIntensities.length; k++) {
+          const { range } = bellFrequencyIntensities[k];
+          if (
+            frequency >= range.min &&
+            frequency <= range.max &&
+            frequencyData[j] > bellFrequencyIntensities[k].intensity
+          ) {
+            bellFrequencyIntensities[k].intensity = frequencyData[j];
+          }
+        }
+      }
+
+      // 종소리 감지 점수 계산
+      let rangeScores = bellFrequencyIntensities.map(
+        (data) => data.intensity * data.range.weight
+      );
+      let activePeaks = rangeScores.filter((score) => score > 50).length;
+      let hasMultipleRanges = activePeaks >= 3;
+
+      let bellScore = 0;
+      if (hasMultipleRanges) {
+        bellScore =
+          rangeScores.reduce((sum, score) => sum + score, 0) /
+          BELL_FREQUENCY_RANGES.length;
+        bellScore *= 1 + activePeaks / 10;
+      } else {
+        bellScore =
+          rangeScores.reduce((sum, score) => sum + score, 0) /
+          BELL_FREQUENCY_RANGES.length;
+      }
+
+      // 종소리 감지 로직
+      if (bellScore > bellDetectionThreshold) {
+        consecutiveDetections++;
+
+        // 감지 정보 기록 (2회 이상 연속 감지되고, 마지막 감지로부터 2초 이상 지난 경우)
+        if (consecutiveDetections >= 2 && currentTime - lastDetectionTime > 2) {
+          const minutes = Math.floor(currentTime / 60);
+          const seconds = Math.floor(currentTime % 60);
+          const timestamp = `${formatTime(minutes)}:${formatTime(seconds)}`;
+
+          detectionResults.push({
+            time: currentTime,
+            timestamp,
+            score: bellScore,
+            activePeaks,
+          });
+
+          lastDetectionTime = currentTime;
+          console.log(
+            `종소리 감지! 시간: ${timestamp}, 점수: ${bellScore.toFixed(
+              1
+            )}, 활성 피크: ${activePeaks}`
+          );
+        }
+      } else {
+        consecutiveDetections = Math.max(0, consecutiveDetections - 0.5);
+      }
+    } catch (error) {
+      console.error(`시간 ${currentTime}초 분석 중 오류:`, error);
+    }
+  }
+
+  // 분석용 연결 해제 (메모리 누수 방지)
+  if (audioSource && batchAnalyser) {
+    audioSource.disconnect(batchAnalyser);
+  }
+
+  // 원래 위치로 복원
+  videoPlayer.currentTime = originalTime;
+
+  // 재생 중이었다면 다시 재생 시작
+  if (wasPlaying) {
+    try {
+      await videoPlayer.play();
+    } catch (e) {
+      console.error("비디오 재생 재개 중 오류:", e);
+    }
+  }
+
+  // 감지 결과 분석 및 표시
+  console.log("오디오 분석 완료:", detectionResults);
+  displayAnalysisResults(detectionResults);
+}
+
+// 분석 결과 표시 함수
+function displayAnalysisResults(results) {
+  if (!analysisResultEl) return;
+
+  if (results.length === 0) {
+    analysisResultEl.innerHTML =
+      "<h4>종소리 감지 결과</h4><p>종소리가 감지되지 않았습니다.</p>";
+    return;
+  }
+
+  // 종소리 감지 간격 계산을 통한 라운드 분석
+  let rounds = [];
+  let restPeriods = [];
+
+  for (let i = 1; i < results.length; i++) {
+    const timeDiff = results[i].time - results[i - 1].time;
+
+    // 약 3분(170~190초) 간격은 라운드 종료
+    if (timeDiff >= 170 && timeDiff <= 190) {
+      rounds.push({
+        start: results[i - 1].time,
+        end: results[i].time,
+        duration: timeDiff,
+      });
+    }
+    // 약 30초(25~35초) 간격은 휴식 종료
+    else if (timeDiff >= 25 && timeDiff <= 35) {
+      restPeriods.push({
+        start: results[i - 1].time,
+        end: results[i].time,
+        duration: timeDiff,
+      });
+    }
+  }
+
+  // 결과 HTML 생성
+  let html = "<h4>종소리 감지 결과</h4>";
+
+  // 라운드 정보
+  if (rounds.length > 0) {
+    html += "<div class='analysis-section'><h5>라운드 정보</h5>";
+    html += "<ul>";
+    rounds.forEach((round, index) => {
+      const startM = Math.floor(round.start / 60);
+      const startS = Math.floor(round.start % 60);
+      const endM = Math.floor(round.end / 60);
+      const endS = Math.floor(round.end % 60);
+
+      html += `<li>라운드 ${index + 1}: ${formatTime(startM)}:${formatTime(
+        startS
+      )} ~ ${formatTime(endM)}:${formatTime(endS)} (${round.duration.toFixed(
+        1
+      )}초)</li>`;
+    });
+    html += "</ul></div>";
+  }
+
+  // 휴식 정보
+  if (restPeriods.length > 0) {
+    html += "<div class='analysis-section'><h5>휴식 정보</h5>";
+    html += "<ul>";
+    restPeriods.forEach((rest, index) => {
+      const startM = Math.floor(rest.start / 60);
+      const startS = Math.floor(rest.start % 60);
+      const endM = Math.floor(rest.end / 60);
+      const endS = Math.floor(rest.end % 60);
+
+      html += `<li>휴식 ${index + 1}: ${formatTime(startM)}:${formatTime(
+        startS
+      )} ~ ${formatTime(endM)}:${formatTime(endS)} (${rest.duration.toFixed(
+        1
+      )}초)</li>`;
+    });
+    html += "</ul></div>";
+  }
+
+  // 모든 종소리 감지 기록
+  html += "<div class='analysis-section'><h5>전체 종소리 감지 (시간순)</h5>";
+  html += "<table style='width:100%; border-collapse: collapse;'>";
+  html +=
+    "<tr style='background-color: #333;'><th style='padding: 6px; text-align: left;'>번호</th><th style='padding: 6px; text-align: left;'>시간</th><th style='padding: 6px; text-align: left;'>점수</th><th style='padding: 6px; text-align: left;'>피크 수</th></tr>";
+
+  results.forEach((result, index) => {
+    const rowStyle =
+      index % 2 === 0
+        ? "background-color: #222;"
+        : "background-color: #2a2a2a;";
+    html += `<tr style='${rowStyle}'>`;
+    html += `<td style='padding: 6px;'>${index + 1}</td>`;
+    html += `<td style='padding: 6px;'>${result.timestamp}</td>`;
+    html += `<td style='padding: 6px;'>${result.score.toFixed(1)}</td>`;
+    html += `<td style='padding: 6px;'>${result.activePeaks}</td>`;
+    html += "</tr>";
+  });
+
+  html += "</table></div>";
+
+  // 영상으로 이동하는 기능 제공
+  html += "<div class='analysis-section'><h5>감지 시간으로 이동</h5>";
+  html +=
+    "<div style='display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;'>";
+
+  results.forEach((result, index) => {
+    html += `<button class='time-jump-btn' data-time='${result.time}'>${result.timestamp}</button>`;
+  });
+
+  html += "</div></div>";
+
+  // 결과 표시
+  analysisResultEl.innerHTML = html;
+
+  // 시간 이동 버튼 이벤트 바인딩
+  const timeJumpButtons = analysisResultEl.querySelectorAll(".time-jump-btn");
+  timeJumpButtons.forEach((button) => {
+    button.addEventListener("click", function () {
+      const jumpTime = parseFloat(this.getAttribute("data-time"));
+      if (!isNaN(jumpTime) && videoPlayer) {
+        videoPlayer.currentTime = jumpTime;
+      }
+    });
+
+    // 버튼 스타일 설정
+    button.style.padding = "5px 10px";
+    button.style.backgroundColor = "#007bff";
+    button.style.color = "white";
+    button.style.border = "none";
+    button.style.borderRadius = "4px";
+    button.style.cursor = "pointer";
+  });
+}

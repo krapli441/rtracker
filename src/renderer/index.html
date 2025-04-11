@@ -39,6 +39,49 @@
         margin-bottom: 8px;
         border-radius: 4px;
       }
+      /* 분석 결과 섹션 스타일 */
+      .analysis-container {
+        margin-top: 20px;
+        padding: 16px;
+        background-color: #1a1a1a;
+        border-radius: 4px;
+      }
+      .analysis-section {
+        margin-bottom: 16px;
+        border-bottom: 1px solid #333;
+        padding-bottom: 16px;
+      }
+      .analysis-section:last-child {
+        border-bottom: none;
+        margin-bottom: 0;
+      }
+      .analysis-section h5 {
+        margin-top: 0;
+        margin-bottom: 8px;
+        color: #cccccc;
+      }
+      #analyze-audio-btn {
+        background-color: #007bff;
+        color: white;
+        border: none;
+        padding: 8px 16px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: bold;
+        margin-top: 16px;
+      }
+      #analyze-audio-btn:disabled {
+        background-color: #555;
+        cursor: not-allowed;
+      }
+      .time-jump-btn {
+        background-color: #007bff;
+        color: white;
+        border: none;
+        padding: 4px 8px;
+        border-radius: 4px;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
@@ -123,6 +166,18 @@
               <button id="zoom-in-btn" class="control-btn">확대</button>
               <button id="zoom-out-btn" class="control-btn">축소</button>
             </div>
+
+            <!-- 오디오 분석 버튼 -->
+            <button id="analyze-audio-btn" disabled>오디오 분석하기</button>
+          </div>
+
+          <!-- 분석 결과 섹션 -->
+          <div id="analysis-result" class="analysis-container">
+            <h4>분석 결과</h4>
+            <p>
+              비디오를 선택하고 오디오 분석 버튼을 눌러 종소리를 자동으로
+              분석하세요.
+            </p>
           </div>
         </div>
       </main>
