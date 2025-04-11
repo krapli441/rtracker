@@ -19,6 +19,8 @@ const zoomOutBtn = document.getElementById("zoom-out-btn");
 const peakFrequencyEl = document.getElementById("peak-frequency");
 const peakIntensityEl = document.getElementById("peak-intensity");
 const bellDetectionEl = document.getElementById("bell-detection");
+const bellHistoryEl = document.getElementById("bell-history");
+const roundAnalysisEl = document.getElementById("round-analysis");
 const filterAllBtn = document.getElementById("filter-all");
 const filterBellBtn = document.getElementById("filter-bell");
 const filterLowBtn = document.getElementById("filter-low");
@@ -42,10 +44,19 @@ let isPlaying = false;
 // 주파수 필터 설정
 let currentFilter = "all"; // 'all', 'bell', 'low', 'mid', 'high'
 // 종소리 감지 관련 변수
-let bellDetectionThreshold = 150; // 종소리 감지 임계값
+let bellDetectionThreshold = 130; // 임계값 조정
 let bellDetectionCount = 0; // 종소리 감지 카운트
 let bellLastDetectedAt = 0; // 마지막 종소리 감지 시간
 let isBellDetected = false; // 현재 종소리 감지 상태
+let bellDetectionHistory = []; // 종소리 감지 이력
+
+// 종소리 주파수 범위 - 다양한 주파수 대역을 포함하도록 수정
+const BELL_FREQUENCY_RANGES = [
+  { min: 400, max: 1100, weight: 1.0 }, // 저주파 영역 - 이미지의 노란색 부분
+  { min: 1800, max: 2200, weight: 0.9 }, // 2000Hz 주변 - 이미지의 첫 번째 핑크색 피크
+  { min: 4800, max: 5200, weight: 0.7 }, // 5000Hz 주변 - 이미지의 두 번째 핑크색 피크
+  { min: 9800, max: 10200, weight: 0.5 }, // 10000Hz 주변 - 높은 주파수 영역
+];
 
 // 비디오 선택 버튼 이벤트 리스너
 selectVideoBtn.addEventListener("click", async () => {
@@ -273,7 +284,16 @@ function drawSpectrum() {
   // 피크 주파수 초기화
   let peakFrequency = 0;
   let peakIntensity = 0;
-  let bellFrequencyIntensity = 0;
+
+  // 종소리 주파수 범위별 강도 측정
+  let bellFrequencyIntensities = BELL_FREQUENCY_RANGES.map((range) => ({
+    range,
+    intensity: 0,
+  }));
+  let totalBellScore = 0;
+
+  // 지속 시간에 따른 패턴 분석을 위한 시간 윈도우 데이터 (미래 확장용)
+  const timeWindowData = {};
 
   // 주파수 데이터를 기반으로 스펙트럼 그리기
   for (let i = 0; i < frequencyData.length; i++) {
@@ -289,7 +309,9 @@ function drawSpectrum() {
         shouldDisplay = true;
         break;
       case "bell":
-        shouldDisplay = frequency >= 700 && frequency <= 1200;
+        shouldDisplay = BELL_FREQUENCY_RANGES.some(
+          (range) => frequency >= range.min && frequency <= range.max
+        );
         break;
       case "low":
         shouldDisplay = frequency < 500;
@@ -308,13 +330,16 @@ function drawSpectrum() {
       peakFrequency = frequency;
     }
 
-    // 종소리 주파수 범위의 강도 계산
-    if (
-      frequency >= 700 &&
-      frequency <= 1200 &&
-      frequencyData[i] > bellFrequencyIntensity
-    ) {
-      bellFrequencyIntensity = frequencyData[i];
+    // 종소리 주파수 범위별 강도 측정
+    for (let j = 0; j < bellFrequencyIntensities.length; j++) {
+      const { range } = bellFrequencyIntensities[j];
+      if (
+        frequency >= range.min &&
+        frequency <= range.max &&
+        frequencyData[i] > bellFrequencyIntensities[j].intensity
+      ) {
+        bellFrequencyIntensities[j].intensity = frequencyData[i];
+      }
     }
 
     if (shouldDisplay) {
@@ -322,15 +347,52 @@ function drawSpectrum() {
       const intensity = frequencyData[i] / 255;
       let r, g, b;
 
-      // 복싱 종소리 주파수 범위(약 700-1200Hz)를 강조
-      const isBellFrequency = frequency >= 700 && frequency <= 1200;
+      // 종소리 주파수 범위 확인
+      const isBellFrequency = BELL_FREQUENCY_RANGES.some(
+        (range) => frequency >= range.min && frequency <= range.max
+      );
 
       // 주파수 범위에 따라 다른 색상 사용
       if (isBellFrequency && frequencyData[i] > 100) {
-        // 종소리 주파수 범위(높은 강도일 때)는 밝은 노란색으로 강조
-        r = 255;
-        g = 255;
-        b = 0;
+        // 어떤 범위인지 확인
+        let rangeIndex = -1;
+        for (let k = 0; k < BELL_FREQUENCY_RANGES.length; k++) {
+          if (
+            frequency >= BELL_FREQUENCY_RANGES[k].min &&
+            frequency <= BELL_FREQUENCY_RANGES[k].max
+          ) {
+            rangeIndex = k;
+            break;
+          }
+        }
+
+        // 범위별 색상 설정
+        switch (rangeIndex) {
+          case 0: // 첫 번째 범위 - 노란색
+            r = 255;
+            g = 255;
+            b = 0;
+            break;
+          case 1: // 두 번째 범위 - 주황색
+            r = 255;
+            g = 150;
+            b = 0;
+            break;
+          case 2: // 세 번째 범위 - 핑크색
+            r = 255;
+            g = 50;
+            b = 150;
+            break;
+          case 3: // 네 번째 범위 - 보라색
+            r = 200;
+            g = 50;
+            b = 255;
+            break;
+          default: // 기본 - 흰색
+            r = 255;
+            g = 255;
+            b = 255;
+        }
       } else {
         // 일반 주파수 범위는 강도에 따라 색상 결정
         r = Math.round(intensity * 255);
@@ -351,8 +413,31 @@ function drawSpectrum() {
     x += barWidth;
   }
 
+  // 종소리 감지 점수 계산 (알고리즘 개선)
+  // 1. 각 범위별 점수 계산
+  let rangeScores = bellFrequencyIntensities.map(
+    (data) => data.intensity * data.range.weight
+  );
+
+  // 2. 범위 간 균형 검사 (종소리는 여러 주파수 범위에서 동시에 나타남)
+  let hasMultipleRanges = rangeScores.filter((score) => score > 50).length >= 2;
+
+  // 3. 최종 점수 계산
+  if (hasMultipleRanges) {
+    // 여러 범위가 동시에 활성화된 경우 점수 가중
+    totalBellScore =
+      rangeScores.reduce((sum, score) => sum + score, 0) /
+      BELL_FREQUENCY_RANGES.length;
+    totalBellScore *= 1.2; // 여러 범위가 있을 때 가중치 부여
+  } else {
+    // 단일 범위만 활성화된 경우 (노이즈일 가능성 높음)
+    totalBellScore =
+      rangeScores.reduce((sum, score) => sum + score, 0) /
+      BELL_FREQUENCY_RANGES.length;
+  }
+
   // 종소리 감지 처리
-  detectBellSound(bellFrequencyIntensity);
+  detectBellSound(totalBellScore);
 
   // 피크 주파수 정보 업데이트
   peakFrequencyEl.textContent = `${Math.round(peakFrequency)} Hz`;
@@ -363,26 +448,37 @@ function drawSpectrum() {
 }
 
 // 종소리 감지 함수
-function detectBellSound(bellIntensity) {
+function detectBellSound(bellScore) {
   const currentTime = videoPlayer.currentTime;
 
-  // 종소리 감지 (강도가 임계값을 넘고, 마지막 감지로부터 충분한 시간이 지났을 때)
-  if (bellIntensity > bellDetectionThreshold) {
+  // 종소리 감지 (점수가 임계값을 넘고, 마지막 감지로부터 충분한 시간이 지났을 때)
+  if (bellScore > bellDetectionThreshold) {
     // 연속 감지 카운트 증가
     bellDetectionCount++;
 
-    // 일정 횟수 이상 연속 감지되면 종소리로 판단
+    // 종소리 감지 확인 디버깅 메시지
+    console.log(
+      `종소리 감지 점수: ${bellScore.toFixed(2)}, 카운트: ${bellDetectionCount}`
+    );
+
+    // 일정 횟수 이상 연속 감지되면 종소리로 판단 (2회로 조정)
     if (
-      bellDetectionCount >= 3 &&
+      bellDetectionCount >= 2 &&
       !isBellDetected &&
       currentTime - bellLastDetectedAt > 2
     ) {
       isBellDetected = true;
       bellLastDetectedAt = currentTime;
-      bellDetectionEl.textContent = `감지됨 (${formatTime(
-        Math.floor(currentTime / 60)
-      )}:${formatTime(Math.floor(currentTime % 60))})`;
-      bellDetectionEl.style.color = "yellow";
+
+      // 종소리 감지 기록 추가
+      bellDetectionHistory.push({
+        time: currentTime,
+        score: bellScore,
+        timestamp: new Date().toISOString(),
+      });
+
+      // 종소리 감지 정보 업데이트
+      updateBellDetectionInfo();
 
       // 3초 후 감지 상태 초기화
       setTimeout(() => {
@@ -391,12 +487,85 @@ function detectBellSound(bellIntensity) {
       }, 3000);
     }
   } else {
-    // 감지 카운트 초기화
-    bellDetectionCount = Math.max(0, bellDetectionCount - 1);
+    // 감지 카운트 더 천천히 감소 (연속성 향상)
+    if (bellDetectionCount > 0) {
+      bellDetectionCount -= 0.5; // 0.5씩 감소하여 연속성 유지
+    }
 
     if (bellDetectionCount === 0 && !isBellDetected) {
       bellDetectionEl.textContent = "감지되지 않음";
     }
+  }
+}
+
+// 종소리 감지 정보 업데이트 함수
+function updateBellDetectionInfo() {
+  if (bellDetectionHistory.length === 0) return;
+
+  // 가장 최근 감지 정보
+  const latestDetection = bellDetectionHistory[bellDetectionHistory.length - 1];
+  const minutes = Math.floor(latestDetection.time / 60);
+  const seconds = Math.floor(latestDetection.time % 60);
+
+  // 정보 업데이트
+  bellDetectionEl.textContent = `감지됨 (${formatTime(minutes)}:${formatTime(
+    seconds
+  )})`;
+  bellDetectionEl.style.color = "yellow";
+
+  // 종소리 히스토리 업데이트
+  let historyText = bellDetectionHistory
+    .slice(-3)
+    .map((detection) => {
+      const mins = Math.floor(detection.time / 60);
+      const secs = Math.floor(detection.time % 60);
+      return `${formatTime(mins)}:${formatTime(secs)}`;
+    })
+    .join(", ");
+
+  bellHistoryEl.textContent = historyText || "없음";
+
+  // 이전 감지와의 시간 차이 계산 (2개 이상 감지된 경우)
+  if (bellDetectionHistory.length >= 2) {
+    const previousDetection =
+      bellDetectionHistory[bellDetectionHistory.length - 2];
+    const timeDiff = latestDetection.time - previousDetection.time;
+
+    // 라운드 분석 표시
+    updateRoundAnalysis(timeDiff);
+
+    // 약 3분(180초) 간격인 경우 라운드 종으로 추정
+    if (timeDiff >= 170 && timeDiff <= 190) {
+      console.log(`라운드 종소리 감지: 간격 ${timeDiff.toFixed(1)}초`);
+    }
+    // 약 30초 간격인 경우 휴식 종료 종으로 추정
+    else if (timeDiff >= 25 && timeDiff <= 35) {
+      console.log(`휴식 종료 종소리 감지: 간격 ${timeDiff.toFixed(1)}초`);
+    }
+  }
+
+  // 콘솔에 감지 기록 출력
+  console.log(`종소리 감지 이력:`, bellDetectionHistory);
+}
+
+// 라운드 분석 텍스트 업데이트
+function updateRoundAnalysis(timeDiff) {
+  if (!timeDiff) {
+    roundAnalysisEl.textContent = "-";
+    return;
+  }
+
+  if (timeDiff >= 170 && timeDiff <= 190) {
+    roundAnalysisEl.textContent = `라운드 종료 (간격: ${timeDiff.toFixed(
+      1
+    )}초)`;
+    roundAnalysisEl.style.color = "lightgreen";
+  } else if (timeDiff >= 25 && timeDiff <= 35) {
+    roundAnalysisEl.textContent = `휴식 종료 (간격: ${timeDiff.toFixed(1)}초)`;
+    roundAnalysisEl.style.color = "orange";
+  } else {
+    roundAnalysisEl.textContent = `알 수 없는 간격 (${timeDiff.toFixed(1)}초)`;
+    roundAnalysisEl.style.color = "white";
   }
 }
 
@@ -405,8 +574,10 @@ function isBellFrequencyRange(binIndex, binCount, sampleRate) {
   // FFT 주파수 값 계산 (0 ~ Nyquist)
   const frequency = (binIndex * sampleRate) / (binCount * 2);
 
-  // 복싱 종소리 주파수 범위 (약 700Hz~1200Hz)
-  return frequency >= 700 && frequency <= 1200;
+  // 여러 종소리 주파수 범위를 확인
+  return BELL_FREQUENCY_RANGES.some(
+    (range) => frequency >= range.min && frequency <= range.max
+  );
 }
 
 // 주파수 구분선 그리기
@@ -437,29 +608,62 @@ function drawFrequencyRangeIndicators() {
     }
   });
 
-  // 종소리 주파수 범위 표시
-  const bellLowIndex = Math.round(
-    (700 * analyser.frequencyBinCount * 2) / audioContext.sampleRate
-  );
-  const bellHighIndex = Math.round(
-    (1200 * analyser.frequencyBinCount * 2) / audioContext.sampleRate
-  );
+  // 종소리 주파수 범위 표시 - 모든 범위 표시
+  BELL_FREQUENCY_RANGES.forEach((range, index) => {
+    const rangeLowIndex = Math.round(
+      (range.min * analyser.frequencyBinCount * 2) / audioContext.sampleRate
+    );
+    const rangeHighIndex = Math.round(
+      (range.max * analyser.frequencyBinCount * 2) / audioContext.sampleRate
+    );
 
-  const bellLowX =
-    ((bellLowIndex * canvas.width) / frequencyData.length) * visualizationScale;
-  const bellHighX =
-    ((bellHighIndex * canvas.width) / frequencyData.length) *
-    visualizationScale;
+    const rangeLowX =
+      ((rangeLowIndex * canvas.width) / frequencyData.length) *
+      visualizationScale;
+    const rangeHighX =
+      ((rangeHighIndex * canvas.width) / frequencyData.length) *
+      visualizationScale;
 
-  // 종소리 영역 표시
-  canvasCtx.strokeStyle = "rgba(255, 255, 0, 0.3)";
-  canvasCtx.fillStyle = "rgba(255, 255, 0, 0.1)";
-  canvasCtx.fillRect(bellLowX, 0, bellHighX - bellLowX, canvas.height);
-  canvasCtx.strokeRect(bellLowX, 0, bellHighX - bellLowX, canvas.height);
+    // 영역 색상 설정 - 첫 번째 범위는 노란색, 나머지는 색상 차별화
+    let strokeColor, fillColor, textColor;
 
-  // 종소리 범위 텍스트
-  canvasCtx.fillStyle = "rgba(255, 255, 0, 0.8)";
-  canvasCtx.fillText("종소리 범위", (bellLowX + bellHighX) / 2 - 30, 22);
+    switch (index) {
+      case 0:
+        strokeColor = "rgba(255, 255, 0, 0.3)";
+        fillColor = "rgba(255, 255, 0, 0.1)";
+        textColor = "rgba(255, 255, 0, 0.8)";
+        break;
+      case 1:
+        strokeColor = "rgba(255, 150, 0, 0.3)";
+        fillColor = "rgba(255, 150, 0, 0.1)";
+        textColor = "rgba(255, 150, 0, 0.8)";
+        break;
+      case 2:
+        strokeColor = "rgba(255, 100, 100, 0.3)";
+        fillColor = "rgba(255, 100, 100, 0.1)";
+        textColor = "rgba(255, 100, 100, 0.8)";
+        break;
+      case 3:
+        strokeColor = "rgba(200, 100, 255, 0.3)";
+        fillColor = "rgba(200, 100, 255, 0.1)";
+        textColor = "rgba(200, 100, 255, 0.8)";
+        break;
+    }
+
+    // 종소리 영역 표시
+    canvasCtx.strokeStyle = strokeColor;
+    canvasCtx.fillStyle = fillColor;
+    canvasCtx.fillRect(rangeLowX, 0, rangeHighX - rangeLowX, canvas.height);
+    canvasCtx.strokeRect(rangeLowX, 0, rangeHighX - rangeLowX, canvas.height);
+
+    // 범위 텍스트
+    canvasCtx.fillStyle = textColor;
+    canvasCtx.fillText(
+      `범위 ${index + 1}`,
+      (rangeLowX + rangeHighX) / 2 - 20,
+      22 + index * 12
+    );
+  });
 }
 
 // 줌 버튼 이벤트 리스너

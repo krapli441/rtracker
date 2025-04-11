@@ -91,7 +91,7 @@
                 전체 주파수
               </button>
               <button id="filter-bell" class="frequency-btn">
-                종소리 주파수 (700-1200Hz)
+                종소리 주파수 (다중 대역)
               </button>
               <button id="filter-low" class="frequency-btn">
                 저주파 (0-500Hz)
@@ -113,6 +113,10 @@
               <div>
                 종소리 감지: <span id="bell-detection">감지되지 않음</span>
               </div>
+              <div>
+                종소리 감지 히스토리: <span id="bell-history">없음</span>
+              </div>
+              <div>라운드 분석: <span id="round-analysis">-</span></div>
             </div>
 
             <div class="waveform-controls">
