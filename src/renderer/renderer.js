@@ -52,10 +52,14 @@ let bellDetectionHistory = []; // 종소리 감지 이력
 
 // 종소리 주파수 범위 - 다양한 주파수 대역을 포함하도록 수정
 const BELL_FREQUENCY_RANGES = [
-  { min: 400, max: 1100, weight: 1.0 }, // 저주파 영역 - 이미지의 노란색 부분
-  { min: 1800, max: 2200, weight: 0.9 }, // 2000Hz 주변 - 이미지의 첫 번째 핑크색 피크
-  { min: 4800, max: 5200, weight: 0.7 }, // 5000Hz 주변 - 이미지의 두 번째 핑크색 피크
-  { min: 9800, max: 10200, weight: 0.5 }, // 10000Hz 주변 - 높은 주파수 영역
+  // { min: 400, max: 1100, weight: 1.0 }, // 저주파 영역 - 이미지의 노란색 부분
+  { min: 2000, max: 2400, weight: 0.9 }, // 2000Hz 주변 - 이미지의 첫 번째 핑크색 피크
+  { min: 3000, max: 3200, weight: 0.9 }, // 2000Hz 주변 - 이미지의 첫 번째 핑크색 피크
+  { min: 4000, max: 4500, weight: 0.9 }, // 2000Hz 주변 - 이미지의 첫 번째 핑크색 피크
+  { min: 5300, max: 5500, weight: 0.9 }, // 2000Hz 주변 - 이미지의 첫 번째 핑크색 피크
+  { min: 6600, max: 7200, weight: 0.7 }, // 5000Hz 주변 - 이미지의 두 번째 핑크색 피크
+  { min: 8000, max: 8500, weight: 0.7 }, // 5000Hz 주변 - 이미지의 두 번째 핑크색 피크
+  { min: 9500, max: 10000, weight: 0.5 }, // 10000Hz 주변 - 높은 주파수 영역
 ];
 
 // 비디오 선택 버튼 이벤트 리스너
@@ -368,23 +372,43 @@ function drawSpectrum() {
 
         // 범위별 색상 설정
         switch (rangeIndex) {
-          case 0: // 첫 번째 범위 - 노란색
+          case 0: // 2000Hz-2400Hz - 빨간색
             r = 255;
-            g = 255;
-            b = 0;
+            g = 50;
+            b = 50;
             break;
-          case 1: // 두 번째 범위 - 주황색
+          case 1: // 3000Hz-3200Hz - 주황색
             r = 255;
             g = 150;
             b = 0;
             break;
-          case 2: // 세 번째 범위 - 핑크색
+          case 2: // 4000Hz-4500Hz - 노란색
             r = 255;
-            g = 50;
+            g = 255;
+            b = 0;
+            break;
+          case 3: // 5300Hz-5500Hz - 라임색
+            r = 150;
+            g = 255;
+            b = 0;
+            break;
+          case 4: // 6600Hz-7200Hz - 청록색
+            r = 0;
+            g = 255;
             b = 150;
             break;
-          case 3: // 네 번째 범위 - 보라색
-            r = 200;
+          case 5: // 6600Hz-7200Hz - 하늘색
+            r = 0;
+            g = 200;
+            b = 255;
+            break;
+          case 6: // 8000Hz-8500Hz - 파란색
+            r = 50;
+            g = 100;
+            b = 255;
+            break;
+          case 7: // 9500Hz-10000Hz - 보라색
+            r = 150;
             g = 50;
             b = 255;
             break;
@@ -420,7 +444,8 @@ function drawSpectrum() {
   );
 
   // 2. 범위 간 균형 검사 (종소리는 여러 주파수 범위에서 동시에 나타남)
-  let hasMultipleRanges = rangeScores.filter((score) => score > 50).length >= 2;
+  let activePeaks = rangeScores.filter((score) => score > 50).length;
+  let hasMultipleRanges = activePeaks >= 3; // 동시에 3개 이상의 주파수 대역이 활성화되면 종소리 가능성 높음
 
   // 3. 최종 점수 계산
   if (hasMultipleRanges) {
@@ -428,12 +453,23 @@ function drawSpectrum() {
     totalBellScore =
       rangeScores.reduce((sum, score) => sum + score, 0) /
       BELL_FREQUENCY_RANGES.length;
-    totalBellScore *= 1.2; // 여러 범위가 있을 때 가중치 부여
+    totalBellScore *= 1 + activePeaks / 10; // 활성화된 피크 수에 따라 가중치 증가 (최대 1.8배)
+
+    // 디버깅용 콘솔 로그
+    if (totalBellScore > 100) {
+      console.log(
+        `활성화된 주파수 피크: ${activePeaks}개, 가중치: ${
+          1 + activePeaks / 10
+        }`
+      );
+      console.log(`범위별 점수:`, rangeScores);
+    }
   } else {
     // 단일 범위만 활성화된 경우 (노이즈일 가능성 높음)
     totalBellScore =
       rangeScores.reduce((sum, score) => sum + score, 0) /
       BELL_FREQUENCY_RANGES.length;
+    // 단일 피크는 가중치 없음
   }
 
   // 종소리 감지 처리
@@ -583,7 +619,9 @@ function isBellFrequencyRange(binIndex, binCount, sampleRate) {
 // 주파수 구분선 그리기
 function drawFrequencyRangeIndicators() {
   // 주요 주파수 구간 표시 (500Hz, 1000Hz, 2000Hz 등)
-  const frequencies = [500, 1000, 2000, 5000, 10000];
+  const frequencies = [
+    1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000,
+  ];
   canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.3)";
   canvasCtx.font = "10px Arial";
   canvasCtx.fillStyle = "white";
@@ -624,29 +662,49 @@ function drawFrequencyRangeIndicators() {
       ((rangeHighIndex * canvas.width) / frequencyData.length) *
       visualizationScale;
 
-    // 영역 색상 설정 - 첫 번째 범위는 노란색, 나머지는 색상 차별화
+    // 영역 색상 설정 - 각 범위별 다른 색상 적용
     let strokeColor, fillColor, textColor;
 
     switch (index) {
-      case 0:
-        strokeColor = "rgba(255, 255, 0, 0.3)";
-        fillColor = "rgba(255, 255, 0, 0.1)";
-        textColor = "rgba(255, 255, 0, 0.8)";
+      case 0: // 2000Hz-2400Hz - 빨간색
+        strokeColor = "rgba(255, 50, 50, 0.3)";
+        fillColor = "rgba(255, 50, 50, 0.1)";
+        textColor = "rgba(255, 50, 50, 0.8)";
         break;
-      case 1:
+      case 1: // 3000Hz-3200Hz - 주황색
         strokeColor = "rgba(255, 150, 0, 0.3)";
         fillColor = "rgba(255, 150, 0, 0.1)";
         textColor = "rgba(255, 150, 0, 0.8)";
         break;
-      case 2:
-        strokeColor = "rgba(255, 100, 100, 0.3)";
-        fillColor = "rgba(255, 100, 100, 0.1)";
-        textColor = "rgba(255, 100, 100, 0.8)";
+      case 2: // 4000Hz-4500Hz - 노란색
+        strokeColor = "rgba(255, 255, 0, 0.3)";
+        fillColor = "rgba(255, 255, 0, 0.1)";
+        textColor = "rgba(255, 255, 0, 0.8)";
         break;
-      case 3:
-        strokeColor = "rgba(200, 100, 255, 0.3)";
-        fillColor = "rgba(200, 100, 255, 0.1)";
-        textColor = "rgba(200, 100, 255, 0.8)";
+      case 3: // 5300Hz-5500Hz - 라임색
+        strokeColor = "rgba(150, 255, 0, 0.3)";
+        fillColor = "rgba(150, 255, 0, 0.1)";
+        textColor = "rgba(150, 255, 0, 0.8)";
+        break;
+      case 4: // 6600Hz-7200Hz - 청록색
+        strokeColor = "rgba(0, 255, 150, 0.3)";
+        fillColor = "rgba(0, 255, 150, 0.1)";
+        textColor = "rgba(0, 255, 150, 0.8)";
+        break;
+      case 5: // 6600Hz-7200Hz - 하늘색
+        strokeColor = "rgba(0, 200, 255, 0.3)";
+        fillColor = "rgba(0, 200, 255, 0.1)";
+        textColor = "rgba(0, 200, 255, 0.8)";
+        break;
+      case 6: // 8000Hz-8500Hz - 파란색
+        strokeColor = "rgba(50, 100, 255, 0.3)";
+        fillColor = "rgba(50, 100, 255, 0.1)";
+        textColor = "rgba(50, 100, 255, 0.8)";
+        break;
+      case 7: // 9500Hz-10000Hz - 보라색
+        strokeColor = "rgba(150, 50, 255, 0.3)";
+        fillColor = "rgba(150, 50, 255, 0.1)";
+        textColor = "rgba(150, 50, 255, 0.8)";
         break;
     }
 
