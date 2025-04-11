@@ -5,6 +5,41 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>복싱 라운드 트래커</title>
     <link rel="stylesheet" href="styles/main.css" />
+    <style>
+      /* 스펙트럼 분석 관련 스타일 */
+      .frequency-controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .frequency-btn {
+        padding: 4px 8px;
+        background-color: #555;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.8rem;
+      }
+      .frequency-btn.active {
+        background-color: #007bff;
+      }
+      .frequency-info {
+        margin-top: 8px;
+        font-size: 0.9rem;
+        background-color: rgba(0, 0, 0, 0.1);
+        padding: 8px;
+        border-radius: 4px;
+      }
+      #waveform {
+        width: 100%;
+        height: 150px;
+        background-color: #1a1a1a;
+        margin-bottom: 8px;
+        border-radius: 4px;
+      }
+    </style>
   </head>
   <body>
     <div class="container">
@@ -44,9 +79,42 @@
             </div>
           </div>
 
-          <!-- WaveSurfer 컨테이너 추가 -->
+          <!-- 스펙트럼 분석 컨테이너 -->
           <div id="waveform-container" class="waveform-container">
+            <h3>주파수 스펙트럼 분석</h3>
+            <!-- 캔버스 요소가 여기에 동적으로 추가됨 -->
             <div id="waveform"></div>
+
+            <!-- 주파수 필터 컨트롤 -->
+            <div class="frequency-controls">
+              <button id="filter-all" class="frequency-btn active">
+                전체 주파수
+              </button>
+              <button id="filter-bell" class="frequency-btn">
+                종소리 주파수 (700-1200Hz)
+              </button>
+              <button id="filter-low" class="frequency-btn">
+                저주파 (0-500Hz)
+              </button>
+              <button id="filter-mid" class="frequency-btn">
+                중주파 (500-2000Hz)
+              </button>
+              <button id="filter-high" class="frequency-btn">
+                고주파 (2000Hz+)
+              </button>
+            </div>
+
+            <!-- 주파수 정보 표시 -->
+            <div class="frequency-info">
+              <div>
+                피크 주파수: <span id="peak-frequency">0 Hz</span> (강도:
+                <span id="peak-intensity">0</span>)
+              </div>
+              <div>
+                종소리 감지: <span id="bell-detection">감지되지 않음</span>
+              </div>
+            </div>
+
             <div class="waveform-controls">
               <button id="zoom-in-btn" class="control-btn">확대</button>
               <button id="zoom-out-btn" class="control-btn">축소</button>

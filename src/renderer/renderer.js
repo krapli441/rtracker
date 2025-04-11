@@ -1,6 +1,5 @@
 const { ipcRenderer } = require("electron");
 const path = require("path");
-const WaveSurfer = require("wavesurfer.js");
 
 // DOM 요소
 const selectVideoBtn = document.getElementById("select-video-btn");
@@ -16,12 +15,37 @@ const totalTimeEl = document.getElementById("total-time");
 const zoomInBtn = document.getElementById("zoom-in-btn");
 const zoomOutBtn = document.getElementById("zoom-out-btn");
 
+// 주파수 관련 DOM 요소
+const peakFrequencyEl = document.getElementById("peak-frequency");
+const peakIntensityEl = document.getElementById("peak-intensity");
+const bellDetectionEl = document.getElementById("bell-detection");
+const filterAllBtn = document.getElementById("filter-all");
+const filterBellBtn = document.getElementById("filter-bell");
+const filterLowBtn = document.getElementById("filter-low");
+const filterMidBtn = document.getElementById("filter-mid");
+const filterHighBtn = document.getElementById("filter-high");
+
 // 현재 선택된 비디오 경로
 let currentVideoPath = null;
-// WaveSurfer 인스턴스
-let wavesurfer = null;
-// 현재 줌 레벨
-let currentZoomLevel = 50;
+// Web Audio API 관련 변수
+let audioContext = null;
+let analyser = null;
+let audioSource = null;
+// Canvas 관련 변수
+let canvas = null;
+let canvasCtx = null;
+// 스펙트럼 시각화 관련 변수
+let frequencyData = null;
+let visualizationScale = 1.0; // 시각화 확대/축소 비율
+let animationId = null;
+let isPlaying = false;
+// 주파수 필터 설정
+let currentFilter = "all"; // 'all', 'bell', 'low', 'mid', 'high'
+// 종소리 감지 관련 변수
+let bellDetectionThreshold = 150; // 종소리 감지 임계값
+let bellDetectionCount = 0; // 종소리 감지 카운트
+let bellLastDetectedAt = 0; // 마지막 종소리 감지 시간
+let isBellDetected = false; // 현재 종소리 감지 상태
 
 // 비디오 선택 버튼 이벤트 리스너
 selectVideoBtn.addEventListener("click", async () => {
@@ -46,11 +70,8 @@ async function loadVideo(filePath) {
   fileName.textContent = fileNameOnly;
 
   try {
-    // 로컬 파일 URL 가져오기
-    const localUrl = await ipcRenderer.invoke("get-local-file-url", filePath);
-
     // 비디오 소스 설정
-    videoPlayer.src = filePath; // 기본 파일 경로로 설정
+    videoPlayer.src = filePath;
 
     // 메타데이터 로드 이벤트
     videoPlayer.addEventListener("loadedmetadata", () => {
@@ -73,8 +94,8 @@ async function loadVideo(filePath) {
         totalMinutes
       )}:${formatTime(totalSeconds)}`;
 
-      // WaveSurfer 초기화 - 오디오 트랙을 추출하기 위한 설정
-      initWaveSurfer(filePath);
+      // 오디오 스펙트럼 분석 초기화
+      initAudioAnalyser();
     });
 
     // 비디오 시간 업데이트 이벤트
@@ -85,151 +106,376 @@ async function loadVideo(filePath) {
   }
 }
 
-// WaveSurfer 초기화 함수
-async function initWaveSurfer(filePath) {
-  // 이전 인스턴스가 있다면 파괴
-  if (wavesurfer) {
-    wavesurfer.destroy();
+// 오디오 분석기 초기화 함수
+function initAudioAnalyser() {
+  // 이전 설정 정리
+  if (audioContext) {
+    audioContext.close();
+  }
+  if (animationId) {
+    cancelAnimationFrame(animationId);
+    animationId = null;
   }
 
   try {
-    // 로컬 URL 생성
-    const localUrl = await ipcRenderer.invoke("get-local-file-url", filePath);
+    // Waveform 컨테이너에 Canvas 생성
+    const waveformContainer = document.getElementById("waveform");
+    waveformContainer.innerHTML = ""; // 기존 내용 제거
 
-    // WaveSurfer 생성
-    wavesurfer = WaveSurfer.create({
-      container: "#waveform",
-      waveColor: "rgb(100, 100, 255)",
-      progressColor: "rgb(0, 0, 200)",
-      cursorColor: "#333",
-      // barWidth: 2,
-      // barRadius: 3,
-      responsive: true,
-      height: 100,
-      // 비디오 파일 직접 로드하므로 WebAudio 백엔드 사용
-      backend: "WebAudio",
-      // 미디오 컨트롤 비활성화
-      mediaControls: false,
-      // 파형 연산 관련 설정
-      normalize: true,
-      splitChannels: false,
-      // 미니맵 비활성화
-      minPxPerSec: 50,
-      // 오디오 파일 직접 로드 설정
-      mediaType: "video",
-    });
+    canvas = document.createElement("canvas");
+    canvas.width = waveformContainer.clientWidth;
+    canvas.height = waveformContainer.clientHeight || 150;
+    waveformContainer.appendChild(canvas);
+    canvasCtx = canvas.getContext("2d");
 
-    // HTML 비디오 요소에서 미디어 소스 로드
-    // 직접 url을 사용하는 대신 videoPlayer 요소의 captureStream() 사용
-    if (navigator.mediaDevices) {
-      console.log("미디어 디바이스 지원");
-      // 미디어 스트림 방식으로 로드 시도
-      wavesurfer.load(filePath);
-    } else {
-      // 예외적인 상황에서는 직접 filePath 사용
-      console.log("미디어 디바이스 미지원, 직접 파일 경로 사용");
-      wavesurfer.load(filePath);
-    }
+    // AudioContext 생성
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
 
-    // WaveSurfer 준비 완료 이벤트
-    wavesurfer.on("ready", function () {
-      console.log("WaveSurfer 준비 완료");
-      currentZoomLevel = 50;
-      wavesurfer.zoom(currentZoomLevel);
+    // 비디오의 오디오 트랙을 소스로 설정
+    audioSource = audioContext.createMediaElementSource(videoPlayer);
 
-      // WaveSurfer의 플레이백 속도를 비디오와 동기화
-      wavesurfer.setPlaybackRate(videoPlayer.playbackRate);
+    // 분석기 노드 생성 및 설정
+    analyser = audioContext.createAnalyser();
+    analyser.fftSize = 2048; // 더 세밀한 주파수 분석을 위해 FFT 크기 설정
+    analyser.smoothingTimeConstant = 0.8; // 스펙트럼 시각화 부드러움 설정
 
-      // 비디오와 WaveSurfer 동기화 시작
-      setupSyncEvents();
-    });
+    // 오디오 소스를 분석기에 연결, 그리고 오디오 출력에 연결
+    audioSource.connect(analyser);
+    analyser.connect(audioContext.destination);
 
-    // 오류 이벤트 처리
-    wavesurfer.on("error", function (err) {
-      console.error("WaveSurfer 오류:", err);
+    // 주파수 데이터 저장 버퍼 생성
+    frequencyData = new Uint8Array(analyser.frequencyBinCount);
 
-      // 오류 발생 시 대체 방법 시도
-      console.log("대체 방법으로 WaveSurfer 로드 시도");
+    // 주파수 필터 버튼 이벤트 설정
+    setupFilterButtons();
 
-      // WebAudio 백엔드에서 문제가 발생한 경우 MediaElement로 다시 시도
-      wavesurfer.destroy();
+    // 비디오 이벤트 리스너 설정
+    setupAudioEvents();
 
-      wavesurfer = WaveSurfer.create({
-        container: "#waveform",
-        waveColor: "rgb(100, 100, 255)",
-        progressColor: "rgb(0, 0, 200)",
-        cursorColor: "#333",
-        // barWidth: 2,
-        // barRadius: 3,
-        responsive: true,
-        height: 100,
-        backend: "MediaElement",
-        mediaControls: false,
-        normalize: true,
-      });
-
-      // 비디오 요소를 사용하지 않고 오디오 요소를 생성
-      const audio = document.createElement("audio");
-      audio.src = filePath;
-      audio.style.display = "none";
-      document.body.appendChild(audio);
-
-      // 오디오 요소 로드
-      wavesurfer.load(audio);
-
-      wavesurfer.on("ready", function () {
-        console.log("WaveSurfer가 대체 방법으로 준비됨");
-        setupSyncEvents();
-      });
-    });
+    // 초기 스펙트럼 그리기
+    drawSpectrum();
   } catch (error) {
-    console.error("WaveSurfer 초기화 중 오류 발생:", error);
-    alert("오디오 파형 생성 중 오류가 발생했습니다.");
+    console.error("오디오 분석기 초기화 중 오류 발생:", error);
+    alert("오디오 분석기 초기화 중 오류가 발생했습니다.");
   }
 }
 
-// 비디오와 WaveSurfer 동기화 설정
-function setupSyncEvents() {
+// 주파수 필터 버튼 설정
+function setupFilterButtons() {
+  // 모든 필터 버튼
+  const filterButtons = [
+    filterAllBtn,
+    filterBellBtn,
+    filterLowBtn,
+    filterMidBtn,
+    filterHighBtn,
+  ];
+
+  // 필터 버튼 클릭 이벤트
+  filterAllBtn.addEventListener("click", () =>
+    setActiveFilter("all", filterButtons)
+  );
+  filterBellBtn.addEventListener("click", () =>
+    setActiveFilter("bell", filterButtons)
+  );
+  filterLowBtn.addEventListener("click", () =>
+    setActiveFilter("low", filterButtons)
+  );
+  filterMidBtn.addEventListener("click", () =>
+    setActiveFilter("mid", filterButtons)
+  );
+  filterHighBtn.addEventListener("click", () =>
+    setActiveFilter("high", filterButtons)
+  );
+}
+
+// 활성 필터 설정
+function setActiveFilter(filter, buttons) {
+  // 현재 필터 설정
+  currentFilter = filter;
+
+  // 버튼 활성화 상태 업데이트
+  buttons.forEach((btn) => btn.classList.remove("active"));
+
+  // 선택된 필터 버튼 활성화
+  switch (filter) {
+    case "all":
+      filterAllBtn.classList.add("active");
+      break;
+    case "bell":
+      filterBellBtn.classList.add("active");
+      break;
+    case "low":
+      filterLowBtn.classList.add("active");
+      break;
+    case "mid":
+      filterMidBtn.classList.add("active");
+      break;
+    case "high":
+      filterHighBtn.classList.add("active");
+      break;
+  }
+}
+
+// 오디오 이벤트 설정
+function setupAudioEvents() {
   // 비디오 재생 이벤트
   videoPlayer.addEventListener("play", function () {
-    // 비디오의 현재 시간으로 WaveSurfer 위치 설정
-    wavesurfer.seekTo(videoPlayer.currentTime / videoPlayer.duration);
-    wavesurfer.play();
+    isPlaying = true;
+    if (audioContext && audioContext.state === "suspended") {
+      audioContext.resume();
+    }
+    drawSpectrum();
   });
 
   // 비디오 일시정지 이벤트
   videoPlayer.addEventListener("pause", function () {
-    wavesurfer.pause();
+    isPlaying = false;
+    if (animationId) {
+      cancelAnimationFrame(animationId);
+      animationId = null;
+    }
   });
 
-  // 비디오 탐색 이벤트
-  videoPlayer.addEventListener("seeking", function () {
-    wavesurfer.seekTo(videoPlayer.currentTime / videoPlayer.duration);
-  });
-
-  // WaveSurfer 클릭 이벤트
-  wavesurfer.on("seek", function (progress) {
-    videoPlayer.currentTime = videoPlayer.duration * progress;
-  });
-
-  // 재생 종료 이벤트
+  // 비디오 종료 이벤트
   videoPlayer.addEventListener("ended", function () {
-    wavesurfer.pause();
+    isPlaying = false;
+    if (animationId) {
+      cancelAnimationFrame(animationId);
+      animationId = null;
+    }
   });
+}
+
+// 스펙트럼 그리기 함수
+function drawSpectrum() {
+  if (!analyser) {
+    return;
+  }
+
+  // 애니메이션 프레임 설정 (재생 중일 때만)
+  if (isPlaying) {
+    animationId = requestAnimationFrame(drawSpectrum);
+  }
+
+  // 주파수 데이터 가져오기
+  analyser.getByteFrequencyData(frequencyData);
+
+  // 캔버스 초기화
+  canvasCtx.fillStyle = "rgb(20, 20, 30)";
+  canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // 스펙트럼 그리기
+  const barWidth = (canvas.width / frequencyData.length) * visualizationScale;
+  let barHeight;
+  let x = 0;
+
+  // 피크 주파수 초기화
+  let peakFrequency = 0;
+  let peakIntensity = 0;
+  let bellFrequencyIntensity = 0;
+
+  // 주파수 데이터를 기반으로 스펙트럼 그리기
+  for (let i = 0; i < frequencyData.length; i++) {
+    // 현재 빈의 주파수 값 계산
+    const frequency =
+      (i * audioContext.sampleRate) / (analyser.frequencyBinCount * 2);
+
+    // 현재 필터에 따라 표시 여부 결정
+    let shouldDisplay = false;
+
+    switch (currentFilter) {
+      case "all":
+        shouldDisplay = true;
+        break;
+      case "bell":
+        shouldDisplay = frequency >= 700 && frequency <= 1200;
+        break;
+      case "low":
+        shouldDisplay = frequency < 500;
+        break;
+      case "mid":
+        shouldDisplay = frequency >= 500 && frequency <= 2000;
+        break;
+      case "high":
+        shouldDisplay = frequency > 2000;
+        break;
+    }
+
+    // 피크 주파수 찾기
+    if (frequencyData[i] > peakIntensity) {
+      peakIntensity = frequencyData[i];
+      peakFrequency = frequency;
+    }
+
+    // 종소리 주파수 범위의 강도 계산
+    if (
+      frequency >= 700 &&
+      frequency <= 1200 &&
+      frequencyData[i] > bellFrequencyIntensity
+    ) {
+      bellFrequencyIntensity = frequencyData[i];
+    }
+
+    if (shouldDisplay) {
+      // 주파수에 따른 색상 계산
+      const intensity = frequencyData[i] / 255;
+      let r, g, b;
+
+      // 복싱 종소리 주파수 범위(약 700-1200Hz)를 강조
+      const isBellFrequency = frequency >= 700 && frequency <= 1200;
+
+      // 주파수 범위에 따라 다른 색상 사용
+      if (isBellFrequency && frequencyData[i] > 100) {
+        // 종소리 주파수 범위(높은 강도일 때)는 밝은 노란색으로 강조
+        r = 255;
+        g = 255;
+        b = 0;
+      } else {
+        // 일반 주파수 범위는 강도에 따라 색상 결정
+        r = Math.round(intensity * 255);
+        g = Math.round((1 - intensity) * 100);
+        b = Math.round(intensity * 150);
+      }
+
+      canvasCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
+
+      // 막대 높이 계산
+      barHeight = (frequencyData[i] / 255) * canvas.height;
+
+      // 막대 그리기
+      canvasCtx.fillRect(x, canvas.height - barHeight, barWidth, barHeight);
+    }
+
+    // x 좌표 업데이트
+    x += barWidth;
+  }
+
+  // 종소리 감지 처리
+  detectBellSound(bellFrequencyIntensity);
+
+  // 피크 주파수 정보 업데이트
+  peakFrequencyEl.textContent = `${Math.round(peakFrequency)} Hz`;
+  peakIntensityEl.textContent = peakIntensity;
+
+  // 주파수 구분선 그리기
+  drawFrequencyRangeIndicators();
+}
+
+// 종소리 감지 함수
+function detectBellSound(bellIntensity) {
+  const currentTime = videoPlayer.currentTime;
+
+  // 종소리 감지 (강도가 임계값을 넘고, 마지막 감지로부터 충분한 시간이 지났을 때)
+  if (bellIntensity > bellDetectionThreshold) {
+    // 연속 감지 카운트 증가
+    bellDetectionCount++;
+
+    // 일정 횟수 이상 연속 감지되면 종소리로 판단
+    if (
+      bellDetectionCount >= 3 &&
+      !isBellDetected &&
+      currentTime - bellLastDetectedAt > 2
+    ) {
+      isBellDetected = true;
+      bellLastDetectedAt = currentTime;
+      bellDetectionEl.textContent = `감지됨 (${formatTime(
+        Math.floor(currentTime / 60)
+      )}:${formatTime(Math.floor(currentTime % 60))})`;
+      bellDetectionEl.style.color = "yellow";
+
+      // 3초 후 감지 상태 초기화
+      setTimeout(() => {
+        isBellDetected = false;
+        bellDetectionEl.style.color = "";
+      }, 3000);
+    }
+  } else {
+    // 감지 카운트 초기화
+    bellDetectionCount = Math.max(0, bellDetectionCount - 1);
+
+    if (bellDetectionCount === 0 && !isBellDetected) {
+      bellDetectionEl.textContent = "감지되지 않음";
+    }
+  }
+}
+
+// 복싱 종소리 주파수 범위 확인 함수
+function isBellFrequencyRange(binIndex, binCount, sampleRate) {
+  // FFT 주파수 값 계산 (0 ~ Nyquist)
+  const frequency = (binIndex * sampleRate) / (binCount * 2);
+
+  // 복싱 종소리 주파수 범위 (약 700Hz~1200Hz)
+  return frequency >= 700 && frequency <= 1200;
+}
+
+// 주파수 구분선 그리기
+function drawFrequencyRangeIndicators() {
+  // 주요 주파수 구간 표시 (500Hz, 1000Hz, 2000Hz 등)
+  const frequencies = [500, 1000, 2000, 5000, 10000];
+  canvasCtx.strokeStyle = "rgba(255, 255, 255, 0.3)";
+  canvasCtx.font = "10px Arial";
+  canvasCtx.fillStyle = "white";
+
+  frequencies.forEach((freq) => {
+    // 주파수 위치 계산
+    const binIndex = Math.round(
+      (freq * analyser.frequencyBinCount * 2) / audioContext.sampleRate
+    );
+    const x =
+      ((binIndex * canvas.width) / frequencyData.length) * visualizationScale;
+
+    if (x < canvas.width) {
+      // 구분선 그리기
+      canvasCtx.beginPath();
+      canvasCtx.moveTo(x, 0);
+      canvasCtx.lineTo(x, canvas.height);
+      canvasCtx.stroke();
+
+      // 주파수 텍스트 표시
+      canvasCtx.fillText(`${freq}Hz`, x + 2, 10);
+    }
+  });
+
+  // 종소리 주파수 범위 표시
+  const bellLowIndex = Math.round(
+    (700 * analyser.frequencyBinCount * 2) / audioContext.sampleRate
+  );
+  const bellHighIndex = Math.round(
+    (1200 * analyser.frequencyBinCount * 2) / audioContext.sampleRate
+  );
+
+  const bellLowX =
+    ((bellLowIndex * canvas.width) / frequencyData.length) * visualizationScale;
+  const bellHighX =
+    ((bellHighIndex * canvas.width) / frequencyData.length) *
+    visualizationScale;
+
+  // 종소리 영역 표시
+  canvasCtx.strokeStyle = "rgba(255, 255, 0, 0.3)";
+  canvasCtx.fillStyle = "rgba(255, 255, 0, 0.1)";
+  canvasCtx.fillRect(bellLowX, 0, bellHighX - bellLowX, canvas.height);
+  canvasCtx.strokeRect(bellLowX, 0, bellHighX - bellLowX, canvas.height);
+
+  // 종소리 범위 텍스트
+  canvasCtx.fillStyle = "rgba(255, 255, 0, 0.8)";
+  canvasCtx.fillText("종소리 범위", (bellLowX + bellHighX) / 2 - 30, 22);
 }
 
 // 줌 버튼 이벤트 리스너
 zoomInBtn.addEventListener("click", function () {
-  if (wavesurfer) {
-    currentZoomLevel = Math.min(currentZoomLevel + 10, 100);
-    wavesurfer.zoom(currentZoomLevel);
+  visualizationScale = Math.min(visualizationScale * 1.2, 5.0);
+  // 다시 그리기
+  if (canvas) {
+    drawSpectrum();
   }
 });
 
 zoomOutBtn.addEventListener("click", function () {
-  if (wavesurfer) {
-    currentZoomLevel = Math.max(currentZoomLevel - 10, 10);
-    wavesurfer.zoom(currentZoomLevel);
+  visualizationScale = Math.max(visualizationScale / 1.2, 0.5);
+  // 다시 그리기
+  if (canvas) {
+    drawSpectrum();
   }
 });
 
@@ -244,11 +490,6 @@ function updateVideoProgress() {
   currentTimeEl.textContent = `${formatTime(currentMinutes)}:${formatTime(
     currentSeconds
   )}`;
-
-  // WaveSurfer 진행 상태 수동 업데이트
-  if (wavesurfer && !wavesurfer.isPlaying()) {
-    wavesurfer.seekTo(videoPlayer.currentTime / videoPlayer.duration);
-  }
 }
 
 // 시간 포맷팅 함수 (한 자리 숫자일 경우 앞에 0 추가)
@@ -259,9 +500,6 @@ function formatTime(time) {
 // 타임라인 변경 이벤트 리스너
 videoTimeline.addEventListener("input", () => {
   videoPlayer.currentTime = videoTimeline.value;
-  if (wavesurfer) {
-    wavesurfer.seekTo(videoPlayer.currentTime / videoPlayer.duration);
-  }
 });
 
 // 재생/일시정지 버튼 이벤트 리스너
@@ -281,5 +519,18 @@ document.addEventListener("keydown", (e) => {
   if (e.code === "Space" && document.activeElement !== selectVideoBtn) {
     e.preventDefault();
     togglePlayPause();
+  }
+});
+
+// 창 크기 변경 시 캔버스 크기 조정
+window.addEventListener("resize", function () {
+  if (canvas) {
+    const waveformContainer = document.getElementById("waveform");
+    canvas.width = waveformContainer.clientWidth;
+
+    // 다시 그리기
+    if (analyser) {
+      drawSpectrum();
+    }
   }
 });
