@@ -44,7 +44,7 @@ let isPlaying = false;
 // 주파수 필터 설정
 let currentFilter = "all"; // 'all', 'bell', 'low', 'mid', 'high'
 // 종소리 감지 관련 변수
-let bellDetectionThreshold = 130; // 임계값 조정
+let bellDetectionThreshold = 180; // 임계값 상향 조정
 let bellDetectionCount = 0; // 종소리 감지 카운트
 let bellLastDetectedAt = 0; // 마지막 종소리 감지 시간
 let isBellDetected = false; // 현재 종소리 감지 상태
