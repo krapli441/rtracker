@@ -455,15 +455,7 @@ function drawSpectrum() {
       BELL_FREQUENCY_RANGES.length;
     totalBellScore *= 1 + activePeaks / 10; // 활성화된 피크 수에 따라 가중치 증가 (최대 1.8배)
 
-    // 디버깅용 콘솔 로그
-    if (totalBellScore > 100) {
-      console.log(
-        `활성화된 주파수 피크: ${activePeaks}개, 가중치: ${
-          1 + activePeaks / 10
-        }`
-      );
-      console.log(`범위별 점수:`, rangeScores);
-    }
+    // 디버깅용 콘솔 로그 제거
   } else {
     // 단일 범위만 활성화된 경우 (노이즈일 가능성 높음)
     totalBellScore =
@@ -473,7 +465,7 @@ function drawSpectrum() {
   }
 
   // 종소리 감지 처리
-  detectBellSound(totalBellScore);
+  detectBellSound(totalBellScore, rangeScores, activePeaks);
 
   // 피크 주파수 정보 업데이트
   peakFrequencyEl.textContent = `${Math.round(peakFrequency)} Hz`;
@@ -484,18 +476,13 @@ function drawSpectrum() {
 }
 
 // 종소리 감지 함수
-function detectBellSound(bellScore) {
+function detectBellSound(bellScore, rangeScores, activePeaksCount) {
   const currentTime = videoPlayer.currentTime;
 
   // 종소리 감지 (점수가 임계값을 넘고, 마지막 감지로부터 충분한 시간이 지났을 때)
   if (bellScore > bellDetectionThreshold) {
     // 연속 감지 카운트 증가
     bellDetectionCount++;
-
-    // 종소리 감지 확인 디버깅 메시지
-    console.log(
-      `종소리 감지 점수: ${bellScore.toFixed(2)}, 카운트: ${bellDetectionCount}`
-    );
 
     // 일정 횟수 이상 연속 감지되면 종소리로 판단 (2회로 조정)
     if (
@@ -512,6 +499,26 @@ function detectBellSound(bellScore) {
         score: bellScore,
         timestamp: new Date().toISOString(),
       });
+
+      // 종소리로 최종 판단되었을 때만 콘솔 로그 출력
+      console.log(
+        `🔔 종소리 감지! 시간=${formatTime(
+          Math.floor(currentTime / 60)
+        )}:${formatTime(
+          Math.floor(currentTime % 60)
+        )}, 점수=${bellScore.toFixed(1)}, 피크 수=${activePeaksCount}`
+      );
+      if (rangeScores) {
+        console.log(
+          "주파수 범위별 점수:",
+          BELL_FREQUENCY_RANGES.map(
+            (range, idx) =>
+              `${range.min}-${range.max}Hz: ${
+                rangeScores[idx] ? rangeScores[idx].toFixed(1) : "N/A"
+              }`
+          )
+        );
+      }
 
       // 종소리 감지 정보 업데이트
       updateBellDetectionInfo();
